@@ -79,7 +79,9 @@ TOUCH_SPAN_MAX = 250.0        # samples in the window spanning more than this: a
 TOUCH_TAP_AGE, TOUCH_SAMPLE_AGE = 2.0, 3.0  # drop undecided taps / old fingertip samples after this
 TOUCH_MIN_GAP = 0.4           # accepted clicks at least this far apart (seconds): one knock, one click
 TOUCH_DRAIN_MAX = 64          # tap datagrams read per camera frame
-GESTURE_HOLD = 0.35          # a touch-down still for this long (capture time) is a click; a drag needs this hold
+GESTURE_DECIDE = 0.25        # a press or two-finger touch-down is decided this long (capture time) after it
+GESTURE_DOUBLE = 0.9         # (taps < 0.4 s apart are dropped as ringing) a touch-down this soon after the last click, and near it, is a press (double-click or drag)
+GESTURE_DOUBLE_DIST = 60.0   # points: how near the last click a press must land
 GESTURE_MOVE = 30.0          # points the fingertip must move from the touch point to start a drag or scroll
 GESTURE_LIFT_WINDOW = 0.35   # lift-off: average fingertip speed over this much capture time ...
 GESTURE_LIFT_SPEED = 12.0    # ... below this (points/s) means the finger has come to rest (slow drags stay above it)
@@ -864,25 +866,32 @@ def format_decision(d):
 
 class GestureEngine:
     """Touch-downs and fingertip frames to mouse actions. Pure: no pyautogui.
-    A touch-down (tap time from TouchFuser) opens a decision. Two fingers (majority vote of two_finger) that move
-    more than GESTURE_MOVE from the touch point scroll at once. One finger that moves before GESTURE_HOLD is a tap
-    withdrawing: a click at the touch point, nothing held. One finger still for GESTURE_HOLD is a click at the touch
-    point; if it then moves more than GESTURE_MOVE it is a drag (down, moves, up). A drag or scroll ends on lift-off: the fingertip
-    has come to rest (average speed below GESTURE_LIFT_SPEED over GESTURE_LIFT_WINDOW), it has been off screen or
-    absent for GESTURE_OFF, or GESTURE_MAX has passed. Frames are kept for GESTURE_HIST seconds so that a touch-down
-    accepted late is replayed from its tap time.
+    A one-finger touch-down (tap time from TouchFuser) is a click at once, and nothing after it can be a drag. Two
+    fingers (majority vote of two_finger over the frames after the touch-down) that move more than GESTURE_MOVE scroll
+    at once; two fingers still for GESTURE_DECIDE are a click, and a later move still scrolls. A touch-down within
+    GESTURE_DOUBLE s and GESTURE_DOUBLE_DIST of the last click is a press, decided within GESTURE_DECIDE: moved more
+    than GESTURE_MOVE it is a drag (down at the touch point, moves, up on lift-off); still, it is a second click.
+    A drag ends on lift-off: the fingertip has come to rest (average speed below GESTURE_LIFT_SPEED over
+    GESTURE_LIFT_WINDOW), it has been off screen or absent for GESTURE_OFF, or GESTURE_MAX has passed. A scroll or a
+    two-finger press ends when the two-finger pose is lost, or the fingertip is off screen, for two frames (about
+    0.2 s); a scroll also ends at GESTURE_MAX. Frames are kept for GESTURE_HIST seconds so that a touch-down accepted
+    late is replayed from its tap time.
     Actions: ("click"|"down"|"move"|"up"|"point", x, y) and ("scroll", dx, dy) in pyautogui units."""
 
     def __init__(self):
         self.hist = deque()     # (t, x, y, on_screen, two_finger), for replaying a late touch-down
-        self.state = None       # None (idle), "decide", "press" (clicked, still touching), "drag" or "scroll"
+        self.state = None       # None (idle), "decide" (pending press or two fingers), "press" (two fingers clicked,
+                                # still touching), "drag" or "scroll"
         self.start = None       # (t, x, y) of the touch-down
+        self.double = False     # the touch-down is a press: near the last click in time and place
+        self.last_click = None  # (t, x, y) of the last click's touch-down
         self.pos = None         # drag: smoothed fingertip; scroll: last fingertip that counted
-        self.track = deque()    # (t, x, y) on-screen fingertip samples of the gesture, for the speed rule
-        self.votes = []         # two_finger flags of the on-screen frames in the decide window
+        self.track = deque()    # (t, x, y) on-screen fingertip samples of the drag, for the speed rule
+        self.votes = []         # two_finger flags of the on-screen frames since the touch-down
         self.off_n = 0          # consecutive frames off screen or without a hand
         self.off_t = None       # capture time of the first of them
         self.last_t = None      # capture time of the last frame
+        self.lost_n = 0         # consecutive frames without the two-finger pose on screen (press and scroll)
         self.acc = [0.0, 0.0]   # scroll units not yet sent
         self.t_gesture = None   # capture time the drag or scroll started (GESTURE_MAX counts from here)
 
@@ -899,18 +908,24 @@ class GestureEngine:
         return self._step(t, x, y, on, two) if self.state else []
 
     def touch_down(self, t, x, y):
-        acts = [("click", *self.start[1:])] if self.state == "decide" else []  # a pending touch that never moved
+        acts = [self._click(*self.start)] if self.state == "decide" else []  # a pending touch that never moved
         acts += self.release()  # a new touch-down ends the current gesture first
-        self.state, self.start = "decide", (t, x, y)
+        replay = [f for f in self.hist if f[0] > t]  # frames that arrived after the tap
+        votes = [f[4] for f in replay if f[3]]
+        two = 2 * sum(votes) > len(votes)
+        near = (self.last_click is not None and t - self.last_click[0] <= GESTURE_DOUBLE
+                and math.hypot(x - self.last_click[1], y - self.last_click[2]) <= GESTURE_DOUBLE_DIST)
+        if not (two or near):  # one finger: the click is now, and no later frame can make it a drag or scroll
+            return acts + [self._click(t, x, y)]
+        self.state, self.start, self.double = "decide", (t, x, y), near
         self.pos, self.votes, self.off_n, self.off_t, self.acc = (x, y), [], 0, None, [0.0, 0.0]
-        self.track = deque()
-        for f in list(self.hist):  # frames that arrived after the tap
-            if f[0] > t:
-                acts += self._step(*f)
+        self.track, self.lost_n = deque(), 0
+        for f in replay:
+            acts += self._step(*f)
         return acts
 
     def release(self):
-        """End the gesture without a new frame. A held drag sends its up; a pending decision is dropped, not clicked."""
+        """End the gesture without a new frame. A held drag sends its up; a pending or pressed touch is dropped."""
         acts = [("up", *self.pos)] if self.state == "drag" else []
         self.state = None
         return acts
@@ -924,30 +939,45 @@ class GestureEngine:
     def _cap(self, t):
         return self.release() if self.state in ("drag", "scroll") and t - self.t_gesture >= GESTURE_MAX else []
 
-    def _step(self, t, x, y, on, two):
-        if self.state is None:  # a replayed frame after the gesture has ended (a withdrawal click) changes nothing
-            return []
-        t0, px, py = self.start
-        if self.state in ("decide", "press"):  # press: the click was emitted at the hold; a move makes it a drag
-            if on:
-                self.votes.append(two)
-            if on and math.hypot(x - px, y - py) > GESTURE_MOVE:
-                if 2 * sum(self.votes) > len(self.votes):  # two fingers: scroll at once
-                    self.state, self.t_gesture = "scroll", t
-                    return [("point", px, py)] + self._track_frame(t, x, y, on)
-                if self.state == "decide" and t - t0 < GESTURE_HOLD:  # moved before the hold: a tap withdrawing
-                    self.state = None
-                    return [("click", px, py)]
-                self.state, self.t_gesture = "drag", t
-                self.pos = (px, py)
-                return [("down", px, py)] + self._track_frame(t, x, y, on)
-            if self.state == "decide" and t - t0 >= GESTURE_HOLD:  # still for the whole hold: a click
-                self.state = "press"
-                return [("click", px, py)]
-            return []
-        return self._track_frame(t, x, y, on)
+    def _click(self, t, x, y):
+        self.last_click = (t, x, y)
+        return ("click", x, y)
 
-    def _track_frame(self, t, x, y, on):
+    def _step(self, t, x, y, on, two):
+        if self.state is None:  # a replayed frame after the gesture has ended changes nothing
+            return []
+        if self.state in ("drag", "scroll"):
+            return self._track_frame(t, x, y, on, two)
+        t0, px, py = self.start
+        if on:
+            self.votes.append(two)
+        two_f = 2 * sum(self.votes) > len(self.votes)  # two fingers by majority of the on-screen frames
+        if self.state == "press":
+            self.lost_n = 0 if on and two else self.lost_n + 1
+            if self.lost_n >= 2:
+                self.state = None
+                return []
+        elif t - t0 >= GESTURE_DECIDE:  # still for the whole window: a click (two fingers keep a scroll open)
+            self.state, self.lost_n = ("press" if two_f else None), 0
+            return [self._click(t0, px, py)]
+        if not (on and math.hypot(x - px, y - py) > GESTURE_MOVE):
+            return []
+        if two_f:  # two fingers: scroll at once
+            self.state, self.t_gesture, self.lost_n = "scroll", t, 0
+            return [("point", px, py)] + self._track_frame(t, x, y, on, two)
+        if self.state == "press":  # a tap that was clicked never becomes a drag
+            return []
+        if self.double:  # a press that moves: drag from its touch point
+            self.state, self.t_gesture, self.pos, self.last_click = "drag", t, (px, py), None
+            return [("down", px, py)] + self._track_frame(t, x, y, on, two)
+        self.state = None  # one finger that moved inside the window: its click, and nothing else
+        return [self._click(t0, px, py)]
+
+    def _track_frame(self, t, x, y, on, two):
+        if self.state == "scroll":  # the two-finger pose lost for two frames: the scroll is over
+            self.lost_n = 0 if on and two else self.lost_n + 1
+            if self.lost_n >= 2:
+                return self.release()
         if not on:
             self.off_n += 1
             if self.off_n == 1:
@@ -977,7 +1007,7 @@ class GestureEngine:
         self.track.append((t, x, y))
         while t - self.track[0][0] > GESTURE_LIFT_WINDOW:
             self.track.popleft()
-        if len(self.track) >= 2:
+        if self.state == "drag" and len(self.track) >= 2:
             (t1, x1, y1), (t2, x2, y2) = self.track[0], self.track[-1]
             if t2 > t1 and math.hypot(x2 - x1, y2 - y1) / (t2 - t1) < GESTURE_LIFT_SPEED:
                 return acts + self.release()  # the finger has come to rest

@@ -255,6 +255,22 @@ pre { margin: 8px 0 0; height: 300px; overflow: auto; padding: 8px; font: 12px/1
 .problem { color: var(--bad); font-weight: 600; margin: 4px 0; }
 .good { color: var(--good); }
 #msg { color: var(--bad); min-height: 1.3em; margin: 8px 0 0; }
+h3 { margin: 14px 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.target { min-width: 120px; min-height: 80px; display: flex; flex-direction: column; align-items: center;
+          justify-content: center; gap: 6px; padding: 8px; }
+.target.flash { background: var(--accent); border-color: transparent; color: #fff; }
+.scroll-x { overflow-x: auto; }
+.field { position: relative; height: 220px; min-width: 500px; background: var(--bg); border: 1px dashed var(--line);
+         border-radius: 6px; overflow: hidden; }
+.box { position: absolute; left: 20px; top: 65px; width: 90px; height: 90px; padding: 4px; touch-action: none;
+       user-select: none; cursor: grab; font-size: 13px; }
+.list { position: relative; height: 260px; overflow-y: auto; background: var(--bg); border: 1px solid var(--line);
+        border-radius: 6px; }
+.list div { height: 36px; line-height: 36px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+.strip { overflow-x: auto; white-space: nowrap; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.strip span { display: inline-block; width: 120px; height: 60px; line-height: 60px; text-align: center;
+              border-right: 1px solid var(--line); }
 </style></head>
 <body><main>
 <h1>GlassesTouch</h1>
@@ -288,6 +304,35 @@ pre { margin: 8px 0 0; height: 300px; overflow: auto; padding: 8px; font: 12px/1
   <div id="problems"></div>
   <pre id="log" aria-label="Tracker output"></pre>
   <p id="msg" role="alert"></p>
+</section>
+
+<section class="wide" id="test-area" aria-labelledby="test-h">
+  <h2 id="test-h">Test area</h2>
+  <p class="hint">Touch these with the glasses to check clicks, double-clicks, drags and scrolling. Nothing here
+    leaves this page.</p>
+  <div class="targets">
+    <button type="button" class="target" id="t-a"><span>Click target A</span><span id="n-a">Clicks: 0</span></button>
+    <button type="button" class="target" id="t-b"><span>Click target B</span><span id="n-b">Clicks: 0</span></button>
+    <button type="button" class="target" id="t-c"><span>Click target C</span><span id="n-c">Clicks: 0</span></button>
+    <button type="button" class="target" id="t-dbl"><span>Double-click target</span><span id="n-dbl">Double-clicks: 0</span></button>
+  </div>
+
+  <h3>Drag</h3>
+  <div class="scroll-x">
+    <div id="field" class="field" role="group" aria-label="Drag field">
+      <button type="button" id="box" class="box" aria-label="Draggable box">Drag me</button>
+    </div>
+  </div>
+  <p id="n-drag">Drags: 0</p>
+  <p id="drop" class="hint">Last drop: none yet</p>
+
+  <h3>Scroll</h3>
+  <div id="list" class="list" role="region" aria-label="Scrollable list of 100 rows" tabindex="0"></div>
+  <p>Top row: <span id="top">1</span></p>
+  <div id="strip" class="strip" role="region" aria-label="Horizontal strip of 40 cells" tabindex="0"></div>
+
+  <p>Last touch: <span id="last">none yet</span></p>
+  <p><button type="button" id="reset">Reset test area</button></p>
 </section>
 </main>
 <script>
@@ -391,6 +436,86 @@ async function poll() {
   $("start").disabled = t.state === "running";
   $("stop").disabled = t.state !== "running";
 }
+
+// Test area: purely on this page. No requests, no token.
+const ta = { a: 0, b: 0, c: 0, dbl: 0, drags: 0 };
+const taSection = $("test-area"), field = $("field"), box = $("box"), list = $("list"), strip = $("strip");
+function showCounts() {
+  $("n-a").textContent = "Clicks: " + ta.a;
+  $("n-b").textContent = "Clicks: " + ta.b;
+  $("n-c").textContent = "Clicks: " + ta.c;
+  $("n-dbl").textContent = "Double-clicks: " + ta.dbl;
+  $("n-drag").textContent = "Drags: " + ta.drags;
+}
+function flash(el) {
+  el.classList.add("flash");
+  setTimeout(() => el.classList.remove("flash"), 250);
+}
+["a", "b", "c"].forEach(k => {
+  $("t-" + k).addEventListener("click", () => { ta[k] += 1; showCounts(); flash($("t-" + k)); });
+});
+$("t-dbl").addEventListener("dblclick", () => { ta.dbl += 1; showCounts(); flash($("t-dbl")); });
+
+let drag = null;  // the box's pointer: {id, dx, dy, moved, x, y} while it is down
+box.addEventListener("pointerdown", e => {
+  box.setPointerCapture(e.pointerId);
+  const b = box.getBoundingClientRect();
+  drag = { id: e.pointerId, dx: e.clientX - b.left, dy: e.clientY - b.top, moved: false };
+});
+box.addEventListener("pointermove", e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const f = field.getBoundingClientRect();  // keep the box inside the field
+  drag.x = Math.min(Math.max(e.clientX - drag.dx - f.left - field.clientLeft, 0), field.clientWidth - box.offsetWidth);
+  drag.y = Math.min(Math.max(e.clientY - drag.dy - f.top - field.clientTop, 0), field.clientHeight - box.offsetHeight);
+  box.style.left = drag.x + "px";
+  box.style.top = drag.y + "px";
+  drag.moved = true;
+});
+function endDrag(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (drag.moved) {
+    ta.drags += 1;
+    showCounts();
+    $("drop").textContent = `Last drop: x ${Math.round(drag.x)}, y ${Math.round(drag.y)} px from the field's top left`;
+  }
+  drag = null;
+}
+box.addEventListener("pointerup", endDrag);
+box.addEventListener("pointercancel", endDrag);
+
+for (let i = 1; i <= 100; i++) {
+  const row = document.createElement("div");
+  row.textContent = "Row " + i;
+  list.appendChild(row);
+}
+for (let i = 1; i <= 40; i++) {
+  const cell = document.createElement("span");
+  cell.textContent = "Cell " + i;
+  strip.appendChild(cell);
+}
+function topRow() {  // the first row whose bottom edge is below the top of the list
+  const rows = list.children;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].offsetTop + rows[i].offsetHeight > list.scrollTop) return i + 1;
+  }
+  return rows.length;
+}
+list.addEventListener("scroll", () => { $("top").textContent = topRow(); });
+taSection.addEventListener("pointerdown", e => {
+  $("last").textContent = `x ${Math.round(e.pageX)}, y ${Math.round(e.pageY)}`;
+});
+$("reset").addEventListener("click", () => {
+  Object.assign(ta, { a: 0, b: 0, c: 0, dbl: 0, drags: 0 });
+  showCounts();
+  box.style.left = "";
+  box.style.top = "";
+  list.scrollTop = 0;
+  strip.scrollLeft = 0;
+  $("top").textContent = 1;
+  $("drop").textContent = "Last drop: none yet";
+  $("last").textContent = "none yet";
+});
+showCounts();
 
 showConfig(CONFIG);
 poll();

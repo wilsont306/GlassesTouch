@@ -261,6 +261,33 @@ time.sleep(600)
         listener.close()
 
 
+TEST_AREA_IDS = ("test-area", "t-a", "t-b", "t-c", "t-dbl", "n-a", "n-b", "n-c", "n-dbl", "field", "box", "n-drag",
+                 "drop", "list", "top", "strip", "last", "reset")
+
+
+def test_test_area_in_served_page():
+    d = tempfile.mkdtemp(prefix="gt_panel_test_")
+    proc, port, _ = start_panel(d)
+    try:
+        status, page = request(port, "GET", "/")
+    finally:
+        proc.send_signal(signal.SIGINT)
+        stop_panel(proc)
+    assert status == 200
+    for name in TEST_AREA_IDS:
+        assert f'id="{name}"' in page, name
+    # no external resources: nothing loads from another host (the phone placeholder is text, not a load)
+    assert not re.search(r"(src|href)\s*=\s*[\"']?https?:|url\(\s*[\"']?https?:|@import", page)
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    area = script[script.index("// Test area:"):script.index("showConfig(CONFIG);")]
+    assert not re.search(r"fetch\(|XMLHttpRequest|sendBeacon|TOKEN", area), "test area sends something"
+    path = os.path.join(d, "page_script.js")
+    with open(path, "w") as f:
+        f.write(script)
+    r = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
 if __name__ == "__main__":
     test_source_validation()
     test_argv()
@@ -268,4 +295,5 @@ if __name__ == "__main__":
     test_http()
     test_sighup_stops_tracker()
     test_orphan_watchdog()
+    test_test_area_in_served_page()
     print("ALL OK")

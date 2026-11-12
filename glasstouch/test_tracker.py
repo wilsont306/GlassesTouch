@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 from imu_taps import TapDetector, tap_datagram, tap_features
-from tracker import (ARUCO_DICT, GESTURE_HOLD, GESTURE_MAX, SCROLL_GAIN, TRUST_FRAC, GestureEngine,
+from tracker import (ARUCO_DICT, GESTURE_MAX, SCROLL_GAIN, TOUCH_SETTLE, TRUST_FRAC, GestureEngine,
                      ViewServer, pointing_hand, typing_flag,
                      release_touch, touch_step,
                      PinchDetector, ScreenTracker, TouchFuser, two_finger,
@@ -622,10 +622,17 @@ def _frames(t_from, t_to, pos, on=lambda t: True, two=False):
     return out
 
 
-def _with_tap(events, tap):
-    """Insert the tap datagram once its frame would have arrived (tap + 50 ms)."""
-    i = next(i for i, e in enumerate(events) if e[0] == "frame" and e[1] >= tap + 0.05)
-    return events[:i] + [("tap", tap)] + events[i:]
+def _with_tap(events, *taps):
+    """Insert each tap datagram once its frame would have arrived (tap + 50 ms)."""
+    for tap in taps:
+        i = next(i for i, e in enumerate(events) if e[0] == "frame" and e[1] >= tap + 0.05)
+        events = events[:i] + [("tap", tap)] + events[i:]
+    return events
+
+
+def _accepted_at(tap):
+    """The camera frame at which TouchFuser decides a tap: the first one TOUCH_SETTLE after it (15 fps grid)."""
+    return round(float(np.ceil(round((tap + TOUCH_SETTLE) * 15, 9))) / 15, 6)
 
 
 def _drive(events):
@@ -678,27 +685,59 @@ def test_gesture_400_still_taps_one_click_each():
     assert good >= 396, good
 
 
-def test_gesture_one_finger_drag_down_moves_one_up():
-    # tap, still for the 0.4 s hold, then 200 pt: the hold ends in a click, then down, moves, one up
-    timed, eng = _drive(_with_tap(_frames(0.0, 2.2, _swipe(t0=0.5)), 0.1))
+def test_gesture_double_tap_drag_down_moves_one_up():
+    # tap (a click at once), then a second touch 0.45 s later that moves 200 pt: down at the touch point, moves, one up
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.6, _swipe(t0=1.45)), 1.0, 1.45))
     kinds = [a[0] for _, a in timed]
     assert kinds[:2] == ["click", "down"] and kinds.count("up") == 1 and kinds[-1] == "up", kinds
-    assert kinds.count("move") > 10 and "scroll" not in kinds, kinds
+    assert kinds.count("move") > 10 and "scroll" not in kinds and kinds.count("click") == 1, kinds
+    assert timed[0] == (_accepted_at(1.0), ("click", 500.0, 300.0)), timed[0]
+    assert timed[1][0] == _accepted_at(1.45) and timed[1][1][0] == "down", timed[1]
+    assert abs(timed[1][1][1] - 500) < 1 and abs(timed[1][1][2] - 300) < 1, timed[1]  # the second touch's point
     t_up = next(t for t, a in timed if a[0] == "up")
-    assert 1.3 <= t_up <= 1.7, t_up  # the finger rests at 1.22 s; lift-off once the average speed drops
+    assert 2.1 <= t_up <= 2.7, t_up  # the finger rests at 2.17 s; lift-off once the average speed drops
     assert not eng.held
+
+
+def test_gesture_double_tap_still_is_two_clicks():
+    # two taps 0.45 s apart, no move: two clicks (the second when its window closes), and no down
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.2, lambda t: (500.0, 300.0)), 1.0, 1.45))
+    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("click", 500.0, 300.0)], timed
+    assert [t for t, _ in timed] == [_accepted_at(1.0), _accepted_at(1.45)], timed
+    assert not eng.held and eng.state is None
+
+
+def test_gesture_taps_one_second_apart_are_two_clicks():
+    # a second tap 1.0 s later is not a press: an immediate click each, nothing held
+    timed, eng = _drive(_with_tap(_frames(0.0, 3.0, lambda t: (500.0, 300.0)), 1.0, 2.0))
+    assert [a[0] for _, a in timed] == ["click", "click"], timed
+    assert [t for t, _ in timed] == [_accepted_at(1.0), _accepted_at(2.0)], timed
+    assert not eng.held and eng.state is None
+
+
+def test_gesture_two_finger_scroll_ends_when_pose_lost():
+    # two fingers swipe, then at 1.0 s the two-finger pose is lost while the hand keeps moving: scrolling stops
+    frames = _frames(0.0, 2.0, lambda t: (500.0 + 300.0 * max(t - 0.15, 0.0), 300.0), two=True)
+    frames = [("frame", t, tip, on, two and t < 1.0) for _, t, tip, on, two in frames]
+    timed, eng = _drive(_with_tap(frames, 0.1))
+    kinds = {a[0] for _, a in timed}
+    assert kinds <= {"point", "scroll"} and "scroll" in kinds, kinds  # no click, down or up
+    scrolls = [t for t, a in timed if a[0] == "scroll"]
+    assert max(scrolls) >= 0.9, scrolls[-3:]  # it scrolled while the pose held
+    assert max(scrolls) <= 1.0 + 1 / 15 + 1e-6, scrolls[-3:]  # nothing after the second frame without the pose
+    assert eng.state is None and not eng.held
 
 
 def test_gesture_tap_then_withdrawal_is_one_click():
     def pos(t):  # rests, then withdraws 200 pt in 0.2 s, then rests again
         return (500.0 + 200 * min(max(t - 1.05, 0.0) / 0.2, 1.0), 300.0)
     timed, eng = _drive(_with_tap(_frames(0.0, 2.0, pos), 1.0))
-    assert [a[0] for _, a in timed] == ["click"], timed
+    assert timed == [(_accepted_at(1.0), ("click", 500.0, 300.0))], timed  # one click, the moment the tap is accepted
     assert not eng.held
 
 
 def test_gesture_slow_drag_stays_held_while_moving():
-    timed, _ = _drive(_with_tap(_frames(0.0, 3.2, _slow(2.6, t0=0.5)), 0.1))
+    timed, _ = _drive(_with_tap(_frames(0.0, 3.2, _slow(2.6, t0=0.6)), 0.1, 0.6))  # tap, then a second touch: a press
     kinds_t = [(t, a[0]) for t, a in timed]
     assert [k for _, k in kinds_t].count("up") == 1, kinds_t
     assert not [t for t, k in kinds_t if k == "up" and t < 2.6], "released while still moving"
@@ -721,7 +760,7 @@ def test_gesture_two_finger_swipe_scrolls_no_button():
 
 
 def test_gesture_stall_releases_held_drag():
-    timed, eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.5)), 0.1))  # frames stop at 1.0 s
+    timed, eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))  # frames stop at 1.0 s
     assert eng.held
     t = 1.0
     while t < 2.0:
@@ -732,33 +771,33 @@ def test_gesture_stall_releases_held_drag():
 
 
 def test_gesture_0p4s_frame_gap_keeps_drag():
-    ev = _with_tap(_frames(0.0, 0.8, _slow(3.0, t0=0.5)), 0.1)
-    ev += [("tick", round(0.8 + k / 30, 6)) for k in range(1, 13)]  # 0.4 s with no frame, ticks as in run()
-    ev += _frames(1.2, 2.5, _slow(3.0, t0=0.5))
+    ev = _with_tap(_frames(0.0, 0.8667, _slow(3.0, t0=0.6)), 0.1, 0.6)  # the press is accepted at 0.8667: a drag
+    ev += [("tick", round(0.8667 + k / 30, 6)) for k in range(1, 13)]  # 0.4 s with no frame, ticks as in run()
+    ev += _frames(1.2667, 2.5, _slow(3.0, t0=0.6))
     timed, eng = _drive(ev)
     assert not [t for t, a in timed if a[0] == "up" and t < 2.5], "the gap released the drag"
     assert eng.held and sum(1 for t, a in timed if a[0] == "move" and t > 1.2) > 5
 
 
 def test_gesture_forced_up_after_max():
-    timed, _ = _drive(_with_tap(_frames(0.0, 12.0, _slow(12.5, t0=0.5)), 0.1))  # still moving: only the cap can end it
-    down = next(t for t, a in timed if a[0] == "down")
+    timed, _ = _drive(_with_tap(_frames(0.0, 12.0, _slow(12.5, t0=0.6)), 0.1, 0.6))  # still moving: only the cap can end it
+    start = 0.8  # the first frame the press has moved GESTURE_MOVE: the drag, and so the cap, starts there
     ups = [t for t, a in timed if a[0] == "up"]
-    assert len(ups) == 1 and down + GESTURE_MAX <= ups[0] <= down + GESTURE_MAX + 0.2, (down, ups)
+    assert len(ups) == 1 and start + GESTURE_MAX - 1 / 15 <= ups[0] <= start + GESTURE_MAX + 0.2, (start, ups)
     assert timed[-1][1][0] == "up", timed[-3:]  # nothing after the forced release
 
 
 def test_gesture_lost_hand_lifts():
-    ev = _with_tap(_frames(0.0, 0.8, _slow(3.0, t0=0.5)), 0.1)
-    ev += _frames(0.8667, 2.0, _slow(3.0, t0=0.5), on=lambda t: False)  # hand gone from 0.87 s
+    ev = _with_tap(_frames(0.0, 0.8, _slow(3.0, t0=0.6)), 0.1, 0.6)
+    ev += _frames(0.8667, 2.0, _slow(3.0, t0=0.6), on=lambda t: False)  # hand gone from 0.87 s
     timed, _ = _drive(ev)
     ups = [t for t, a in timed if a[0] == "up"]
     assert len(ups) == 1 and 1.4 <= ups[0] <= 1.7, ups
 
 
 def test_gesture_new_touch_down_ends_drag_first():
-    path = _slow(2.0, t0=0.5)
-    ev = _with_tap(_frames(0.0, 2.3, path), 0.1)
+    path = _slow(2.0, t0=0.6)
+    ev = _with_tap(_frames(0.0, 2.3, path), 0.1, 0.6)
     ev.append(("tap", 2.0))  # the second touch: accepted once frames to 2.25 s are in
     ev += _frames(2.3667, 2.7, lambda t: path(2.0))  # it rests after the tap, so it is a click
     timed, _ = _drive(ev)
@@ -785,7 +824,7 @@ def test_release_touch_reaches_mouse_up_on_exception():
             raise fake.FailSafeException("parked on a corner")
     fake.mouseUp = mouse_up
     args = types.SimpleNamespace(dry_run=False, touch_debug=False)
-    eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.5)), 0.1))[1]  # a drag still held
+    eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))[1]  # a drag still held
     assert eng.held
     try:
         T.pyautogui = fake
@@ -800,7 +839,7 @@ def test_release_touch_reaches_mouse_up_on_exception():
         # the FailSafe path: the release action's mouseUp is parked, the retry in the finally releases
         T.perform_gestures = real_perform
         fake.ups, fake.fail_up, fake.FAILSAFE = 0, 2, True  # parked: the release action and the finally both raise
-        eng2 = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.5)), 0.1))[1]
+        eng2 = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))[1]
         release_touch(eng2, args)
         assert fake.ups == 3 and fake.FAILSAFE is False, (fake.ups, fake.FAILSAFE)
     finally:
@@ -1046,7 +1085,9 @@ if __name__ == "__main__":
               test_view_server_mjpeg_and_host_check,
               test_tap_strength_and_knock_gates, test_typing_flag_over_keyboard,
               test_typing_gates_taps_in_window, test_tap_flags_validated,
-              test_gesture_400_still_taps_one_click_each, test_gesture_one_finger_drag_down_moves_one_up,
+              test_gesture_400_still_taps_one_click_each, test_gesture_double_tap_drag_down_moves_one_up,
+              test_gesture_double_tap_still_is_two_clicks, test_gesture_taps_one_second_apart_are_two_clicks,
+              test_gesture_two_finger_scroll_ends_when_pose_lost,
               test_gesture_slow_drag_stays_held_while_moving, test_gesture_two_finger_swipe_scrolls_no_button,
               test_gesture_stall_releases_held_drag, test_gesture_0p4s_frame_gap_keeps_drag,
               test_gesture_forced_up_after_max, test_gesture_lost_hand_lifts,
