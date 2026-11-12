@@ -30,3 +30,7 @@ Manual fallback (no panel): `cd glasstouch && .venv/bin/python tracker.py --sour
 ## GlassesCam
 
 Needs Xcode 26.4+, an iPhone on iOS 17.2+, and Developer Mode turned on in the Meta AI app (no Meta developer credentials needed for that). Open `GlassesCam/CameraAccess.xcodeproj`, choose your iPhone, and run.
+
+## Stopping
+
+Fold the glasses' arms (or take them off and fold them): the stream stops and the tracker stops itself within about 3 s, releasing the mouse. The panel's Stop button does the same. The capture button on the glasses does nothing during a stream. To start again: Start Session → Preview in the phone app, then Start in the panel.
