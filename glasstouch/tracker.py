@@ -83,7 +83,7 @@ TOUCH_MIN_GAP = 0.4           # accepted clicks at least this far apart (seconds
 TOUCH_DRAIN_MAX = 64          # tap datagrams read per camera frame
 GESTURE_DECIDE = 0.25        # a press or two-finger touch-down is decided this long (capture time) after it
 GESTURE_DOUBLE = 0.9         # (taps < 0.4 s apart are dropped as ringing) a touch-down this soon after the last click, and near it, is a press (double-click or drag)
-GESTURE_DOUBLE_DIST = 60.0   # points: how near the last click a press must land
+GESTURE_DOUBLE_DIST = 100.0  # points: how near the last click a press must land (live 2nd taps landed 50-80 pt off)
 GESTURE_MOVE = 30.0          # points the fingertip must move from the touch point to start a drag or scroll
 GESTURE_LIFT_WINDOW = 0.35   # lift-off: average fingertip speed over this much capture time ...
 GESTURE_LIFT_SPEED = 12.0    # ... below this (points/s) means the finger has come to rest (slow drags stay above it)
@@ -480,7 +480,8 @@ def pinch_ratio(pts):
 
 def two_finger(pts):
     """True if index and middle fingers point together: both extended, ring and pinky folded, index and middle
-    tips within 0.6 hand sizes of each other. pts: 21 (x, y) landmark pixels, as for pinch_ratio."""
+    tips within 0.6 hand sizes of each other. pts: 21 landmarks, (x, y) or (x, y, z). run() passes MediaPipe's 3D
+    world landmarks: 2D pixel distances misread a one-finger point as two fingers when the glasses look down."""
     def dist(a, b):
         return np.linalg.norm(np.subtract(pts[a], pts[b]))
     hand = dist(0, 9)
@@ -1043,6 +1044,11 @@ class GestureEngine:
         elif t - t0 >= GESTURE_DECIDE:  # still for the whole window: a click, and the touch is over (keeping a
             # two-finger touch open made the hand's withdrawal scroll, live, when the pose check misread one finger)
             self.state, self.lost_n = None, 0
+            if self.double:  # a still double-tap: a real double-click at the first tap's spot (macOS needs both
+                # clicks at nearly the same point, quickly; the 2nd touch lands up to 100 pt away and 0.25 s late)
+                _, lx, ly = self.last_click
+                self.last_click = None  # a third tap starts afresh
+                return [("dclick", lx, ly)]
             return [self._click(t0, px, py)]
         if not (on and math.hypot(x - px, y - py) > GESTURE_MOVE):
             return []
@@ -1108,15 +1114,17 @@ def perform_gestures(acts, args):
             debug_log(msg)
         elif args.dry_run:
             print(msg)
-        if act[0] in ("click", "down"):
+        if act[0] in ("click", "dclick", "down"):
             flash = act[1:]
         if args.dry_run:
             continue
         kind, *v = act
-        if kind in ("click", "down", "move", "up", "point"):  # onto the screen, never on a FailSafe corner
+        if kind in ("click", "dclick", "down", "move", "up", "point"):  # onto the screen, off FailSafe corners
             v = screen_point(v, *pyautogui.size())[0]
         if kind == "click":
             pyautogui.click(*v)
+        elif kind == "dclick":
+            pyautogui.doubleClick(*v)
         elif kind == "down":
             pyautogui.mouseDown(*v, button="left")
         elif kind == "move":
@@ -1386,7 +1394,9 @@ def run(args):
                     fresh = source is not None
                     tip = raw_map(M, (lm[8].x * w, lm[8].y * h)) if fresh else (0.0, 0.0)
                     on = fresh and screen_point(tip, W, H)[1]  # tip stays raw for the log; actions clamp it
-                    acts += touch_step(engine, fuser, cap, tip, on, two_finger([(p.x * w, p.y * h) for p in lm]))
+                    world = res.hand_world_landmarks[k] if res.hand_world_landmarks else None
+                    pose = [(p.x, p.y, p.z) for p in world] if world else [(p.x * w, p.y * h) for p in lm]
+                    acts += touch_step(engine, fuser, cap, tip, on, two_finger(pose))
                 else:
                     acts += touch_step(engine, fuser, cap, None, False, False)  # hand lost
                 flash = perform_gestures(acts, args)

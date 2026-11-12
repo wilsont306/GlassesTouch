@@ -714,11 +714,19 @@ def test_gesture_double_tap_drag_even_if_pose_reads_two_fingers():
 
 
 def test_gesture_double_tap_still_is_two_clicks():
-    # two taps 0.45 s apart, no move: two clicks (the second when its window closes), and no down
+    # two taps 0.45 s apart, no move: a click, then a real double-click at the first tap's spot when the second
+    # tap's window closes (macOS only counts clicks at nearly the same point), and no down
     timed, eng = _drive(_with_tap(_frames(0.0, 2.2, lambda t: (500.0, 300.0)), 1.0, 1.45))
-    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("click", 500.0, 300.0)], timed
+    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("dclick", 500.0, 300.0)], timed
     assert [t for t, _ in timed] == [_accepted_at(1.0), _accepted_at(1.45)], timed
     assert not eng.held and eng.state is None
+    # live: the 2nd tap landed 50-80 pt off the first: still a double-click, at the first spot
+    pos = lambda t: (500.0, 300.0) if t < 1.3 else (560.0, 350.0)
+    timed, _ = _drive(_with_tap(_frames(0.0, 2.2, pos), 1.0, 1.45))
+    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("dclick", 500.0, 300.0)], timed
+    # a third tap right after is a fresh click, not another double
+    timed, _ = _drive(_with_tap(_frames(0.0, 2.8, lambda t: (500.0, 300.0)), 1.0, 1.45, 2.0))
+    assert [a[0] for _, a in timed] == ["click", "dclick", "click"], timed
 
 
 def test_gesture_taps_one_second_apart_are_two_clicks():
@@ -987,6 +995,9 @@ def test_two_finger_pose():
     spread = pose((True, -4.0), (True, 4.0), (False, 0.5), (False, 0.5))  # V sign, tips 8 apart (> 0.6 * 10)
     assert two_finger(two) is True
     assert two_finger(point) is False and two_finger(open_hand) is False and two_finger(spread) is False
+    # 3D world landmarks (what run() passes): same poses with a z coordinate
+    z = lambda pts: [(x, y, 0.3 * i) for i, (x, y) in enumerate(pts)]
+    assert two_finger(z(two)) is True and two_finger(z(point)) is False and two_finger(z(spread)) is False
 
 
 def test_touch_fuser_reports_accepted_downs():
