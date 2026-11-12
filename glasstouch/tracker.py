@@ -97,6 +97,7 @@ VIEW_FPS = 15                # ... and at most this many a second (shared by all
 TAP_FEATURES = {"gyro_peak": "g", "gyro_x": "gx", "gyro_y": "gy", "gyro_z": "gz", "acc_peak": "a",
                 "acc_x": "ax", "acc_y": "ay", "acc_z": "az", "lid_delta": "lid"}  # imu_taps.py fields -> debug names
 TAP_MIN_ACC, TAP_MAX_ACC = 0.003, 0.08  # accel change (g) of a screen tap: below min is weak, above max a knock
+TAP_MIN_ACC_SECOND = 0.002  # a tap 0.4-0.9 s after a click (the 2nd of a double-tap) lands lighter: live 0.002 g
 TAP_MAX_GYRO = 3.0    # rad/s: a bigger gyro peak is a knock on the case, not a tap on the screen
 TYPING_BELOW = 150.0  # points: a second hand whose index tip is this far under the screen is over the keyboard
 
@@ -797,7 +798,8 @@ class TouchFuser:
             acc = feats.get("acc_peak")  # taps from an old helper have no strength fields: no strength checks
             if self.last_click is not None and tap - self.last_click < TOUCH_MIN_GAP:
                 outcome = "gap"
-            elif acc is not None and acc < self.min_acc:
+            elif acc is not None and acc < self.min_acc and not (  # a double-tap's 2nd tap is lighter: allow it
+                    self.last_click is not None and tap - self.last_click <= GESTURE_DOUBLE and acc >= TAP_MIN_ACC_SECOND):
                 outcome = f"weak acc={acc:.4f}"
             elif acc is not None and (acc > self.max_acc or feats.get("gyro_peak", 0.0) > TAP_MAX_GYRO):
                 outcome = f"knock acc={acc:.3f} gyro={feats.get('gyro_peak', 0.0):.1f}"

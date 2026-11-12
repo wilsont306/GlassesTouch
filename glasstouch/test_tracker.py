@@ -987,6 +987,19 @@ def test_tap_strength_and_knock_gates():
     assert outcome({}) == "CLICK" and outcome({"gyro_peak": 10.0}) == "CLICK"  # no acc field: as before
     assert outcome({"acc_peak": 0.0025}, min_acc=0.002) == "CLICK"  # the limits are the fuser's arguments
     assert outcome({"acc_peak": 0.006}, min_acc=0.01) == "weak"
+    # live: a double-tap's 2nd tap measured 0.002 g; accepted 0.4-0.9 s after a click, not otherwise
+    fu = TouchFuser()
+    _still_finger(fu, 500, 300, 0.0, 3.0)
+    fu.add_tap(1.0, 3.5, {"acc_peak": 0.006})
+    fu.add_tap(1.5, 3.5, {"acc_peak": 0.002})
+    fu.add_tap(2.6, 3.5, {"acc_peak": 0.002})  # 1.1 s after the last click: a lone light jolt
+    fu.poll(3.0)
+    assert [d["outcome"].split()[0] for d in fu.decisions] == ["CLICK", "CLICK", "weak"]
+    fu = TouchFuser()
+    _still_finger(fu, 500, 300, 0.0, 2.0)
+    fu.add_tap(1.0, 3.5, {"acc_peak": 0.001})
+    fu.poll(1.5)
+    assert fu.decisions[0]["outcome"].startswith("weak")  # below the 2nd-tap floor too
 
 
 def test_typing_flag_over_keyboard():
