@@ -820,7 +820,8 @@ def test_release_touch_reaches_mouse_up_on_exception():
 
     class FakePG(types.SimpleNamespace):
         pass
-    fake = FakePG(FAILSAFE=True, FailSafeException=real_pg.FailSafeException, ups=0, fail_up=0)
+    fake = FakePG(FAILSAFE=True, FailSafeException=real_pg.FailSafeException, ups=0, fail_up=0,
+                  size=lambda: (1512, 982))
 
     def mouse_up(*a, **k):
         fake.ups += 1

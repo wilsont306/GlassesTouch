@@ -1110,6 +1110,8 @@ def perform_gestures(acts, args):
         if args.dry_run:
             continue
         kind, *v = act
+        if kind in ("click", "down", "move", "up", "point"):  # onto the screen, never on a FailSafe corner
+            v = screen_point(v, *pyautogui.size())[0]
         if kind == "click":
             pyautogui.click(*v)
         elif kind == "down":
@@ -1380,8 +1382,7 @@ def run(args):
                     # only an M from markers or the tracker this frame counts; the HOLD_SECONDS hold is stale
                     fresh = source is not None
                     tip = raw_map(M, (lm[8].x * w, lm[8].y * h)) if fresh else (0.0, 0.0)
-                    tip, on = screen_point(tip, W, H)
-                    on = on and fresh
+                    on = fresh and screen_point(tip, W, H)[1]  # tip stays raw for the log; actions clamp it
                     acts += touch_step(engine, fuser, cap, tip, on, two_finger([(p.x * w, p.y * h) for p in lm]))
                 else:
                     acts += touch_step(engine, fuser, cap, None, False, False)  # hand lost
