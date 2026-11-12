@@ -7,7 +7,9 @@ Run: .venv/bin/python panel.py [--port 8765]   (GlassesTouch.command does this a
 
 Threat model: the token protects against web pages (CSRF and DNS rebinding), not against other local user
 accounts or local processes. The phone stream and the tap datagrams are unauthenticated, so anyone on the same
-Wi-Fi or on this machine could inject frames or taps. Intended for a single-user Mac on a trusted network.
+Wi-Fi or on this machine could inject frames or taps. The tracker's view stream (127.0.0.1:8767) shows the camera
+image, which includes the screen. It is local-only with a Host check, and other web pages can embed it but not
+read it. Intended for a single-user Mac on a trusted network.
 """
 import argparse
 import hmac
@@ -27,11 +29,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOKEN_HEADER = "X-Panel-Token"
+VIEW_PORT = 8767  # the tracker's --view-port: its annotated debug frame, shown in the preview while it runs
 MARKER_MIN, MARKER_MAX = 40, 1000  # tracker.py refuses < 40; the upper bound is a sanity limit
 NOISE = ("I0000", "W0000", "INFO: Created")  # MediaPipe / TF startup chatter, hidden from the log
 PROBLEM = re.compile(r"cannot|Accessibility|rror|Traceback|died|exited")
+TAP_MIN_DEFAULT, TAP_MIN_MAX = 0.004, 0.05  # --tap-min-acc (g): the panel's range; tracker's max stays 0.08
 DEFAULTS = {"source": "", "touch": True, "show_markers": True, "dry_run": False, "touch_debug": True,
-            "marker_size": None}
+            "marker_size": None, "tap_min_acc": TAP_MIN_DEFAULT}
 BOOLS = ("touch", "show_markers", "dry_run", "touch_debug")
 
 
@@ -98,12 +102,17 @@ def parse_settings(body):
             raise ValueError(f"{k} must be true or false")
     if s["marker_size"] is not None:
         check_marker_size(s["marker_size"])
+    t = s["tap_min_acc"]
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or not 0 <= t <= TAP_MIN_MAX:  # NaN fails this too
+        raise ValueError(f"tap strength must be a number from 0 to {TAP_MIN_MAX}")
+    s["tap_min_acc"] = float(t)
     return s
 
 
 def build_argv(s):
     """tracker.py command line for validated settings. A list for Popen, never a shell string."""
-    argv = [venv_python(), tracker_script(), "--source", s["source"]]
+    argv = [venv_python(), tracker_script(), "--source", s["source"], "--view-port", str(VIEW_PORT), "--no-window"]
+    argv += ["--tap-min-acc", str(s["tap_min_acc"])]
     for key, flag in (("show_markers", "--show-markers"), ("touch", "--touch"),
                       ("touch_debug", "--touch-debug"), ("dry_run", "--dry-run")):
         if s[key]:
@@ -267,6 +276,7 @@ pre { margin: 8px 0 0; height: 300px; overflow: auto; padding: 8px; font: 12px/1
   <label class="row">Debug: one line per tap <input type="checkbox" id="touch_debug"></label>
   <label class="row">Marker size (points) <input type="number" id="marker_size" min="40" max="1000"
          placeholder="140"></label>
+  <label class="row">Tap strength (min) <input type="number" id="tap_min_acc" min="0" max="0.05" step="0.001"></label>
 </section>
 
 <section class="wide">
@@ -283,6 +293,7 @@ pre { margin: 8px 0 0; height: 300px; overflow: auto; padding: 8px; font: 12px/1
 <script>
 const TOKEN = __TOKEN__;
 const CONFIG = __CONFIG__;
+const VIEW_URL = __VIEW_URL__;
 const BOOL_KEYS = ["touch", "show_markers", "dry_run", "touch_debug"];
 const $ = id => document.getElementById(id);
 
@@ -299,9 +310,15 @@ function setPreview(src) {
     img.src = src;
   }
 }
+let phoneSrc = "", trackerRunning = false;
+function updatePreview() {  // the tracker's view while it runs, else the phone's stream
+  setPreview(trackerRunning ? VIEW_URL : phoneSrc);
+}
 $("preview").onerror = () => {  // no broken-image icon: say what to check instead
   $("preview").hidden = true;
-  $("nopreview").textContent = "No picture from the phone. Check the address and that the stream is on.";
+  $("nopreview").textContent = trackerRunning
+    ? "No picture from the tracker yet. Check that it is running."
+    : "No picture from the phone. Check the address and that the stream is on.";
   $("nopreview").hidden = false;
 };
 
@@ -309,7 +326,9 @@ function showConfig(c) {
   $("source").value = c.source;
   BOOL_KEYS.forEach(k => { $(k).checked = c[k]; });
   $("marker_size").value = c.marker_size === null ? "" : c.marker_size;
-  setPreview(c.source);
+  $("tap_min_acc").value = c.tap_min_acc;
+  phoneSrc = c.source;
+  updatePreview();
 }
 
 function settings() {
@@ -317,6 +336,8 @@ function settings() {
   BOOL_KEYS.forEach(k => { s[k] = $(k).checked; });
   const m = $("marker_size").value.trim();
   s.marker_size = m === "" ? null : (/^\d+$/.test(m) ? Number(m) : m);  // a non-number goes through and is refused
+  const t = $("tap_min_acc").value.trim();
+  s.tap_min_acc = t === "" ? null : Number(t);  // null (empty or not a number) is refused by the server
   return s;
 }
 
@@ -343,7 +364,7 @@ $("stop").onclick = async () => {
   poll();
 };
 $("source").addEventListener("change", saveConfig);
-BOOL_KEYS.concat(["marker_size"]).forEach(k => $(k).addEventListener("change", saveConfig));
+BOOL_KEYS.concat(["marker_size", "tap_min_acc"]).forEach(k => $(k).addEventListener("change", saveConfig));
 
 async function poll() {
   let s;
@@ -352,6 +373,8 @@ async function poll() {
   $("state").textContent = t.state === "stopped" ? `Tracker: stopped (exit code ${t.exit_code})`
                          : "Tracker: " + t.state;
   $("state").className = t.state === "running" ? "good" : "";
+  trackerRunning = t.state === "running";
+  updatePreview();
   $("helper").textContent = "Touch helper (imu_taps.py, root): " + (s.helper ? "running" : "not running");
   $("helper").className = s.helper ? "good" : "";
   $("stats").textContent = s.stats;
@@ -418,6 +441,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             page = PAGE.replace("__TOKEN__", json.dumps(self.server.token))
             page = page.replace("__CONFIG__", json.dumps(self.server.config))
+            page = page.replace("__VIEW_URL__", json.dumps(f"http://127.0.0.1:{VIEW_PORT}/"))
             self._send(200, page.encode(), "text/html; charset=utf-8")
         elif self.path == "/status":
             self._json(200, self.server.tracker.status())

@@ -58,14 +58,19 @@ def test_argv():
     tr = panel.tracker_script()
     py = panel.venv_python()
     s = panel.parse_settings({"source": "10.0.0.5"})  # defaults: touch, markers, debug on; dry run off
-    assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/",
+    view = ["--view-port", "8767", "--no-window", "--tap-min-acc", "0.004"]  # 0.004: the panel's default strength
+    assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", *view,
                                    "--show-markers", "--touch", "--touch-debug"], panel.build_argv(s)
     s = panel.parse_settings({"source": "http://phone.local:8080/", "touch": False, "show_markers": False,
                               "touch_debug": False, "dry_run": True})
-    assert panel.build_argv(s) == [py, tr, "--source", "http://phone.local:8080/", "--dry-run"], panel.build_argv(s)
+    assert panel.build_argv(s) == [py, tr, "--source", "http://phone.local:8080/", *view, "--dry-run"], \
+        panel.build_argv(s)
+    s = panel.parse_settings({"source": "10.0.0.5", "tap_min_acc": 0.006})  # the panel's value reaches the tracker
+    argv = panel.build_argv(s)
+    assert argv[argv.index("--tap-min-acc") + 1] == "0.006", argv
     s = panel.parse_settings({"source": "10.0.0.5", "dry_run": True, "marker_size": 200})
-    assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", "--show-markers", "--touch",
-                                   "--touch-debug", "--dry-run", "--marker-size", "200"], panel.build_argv(s)
+    assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", *view, "--show-markers",
+                                   "--touch", "--touch-debug", "--dry-run", "--marker-size", "200"], panel.build_argv(s)
 
 
 def test_settings_ranges():
@@ -77,6 +82,14 @@ def test_settings_ranges():
         except ValueError:
             continue
         raise AssertionError(f"accepted marker_size {n!r}")
+    for n in (0, 0.004, 0.05):
+        assert panel.parse_settings({"tap_min_acc": n})["tap_min_acc"] == float(n)
+    for n in (-0.001, 0.051, "0.004", None, True, float("nan")):
+        try:
+            panel.parse_settings({"tap_min_acc": n})
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted tap_min_acc {n!r}")
     for key in ("touch", "show_markers", "dry_run", "touch_debug"):
         for v in ("yes", 1, None):
             try:
@@ -158,6 +171,7 @@ def test_http():
     try:
         status, page = request(port, "GET", "/")
         assert status == 200 and "GlassesTouch" in page and token in page
+        assert '"http://127.0.0.1:8767/"' in page  # the preview switches to the tracker's view while it runs
 
         good = {"X-Panel-Token": token, "Content-Type": "application/json"}
         body = {"source": "10.0.0.5"}

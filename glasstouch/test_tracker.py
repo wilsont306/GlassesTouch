@@ -1,12 +1,14 @@
 """Camera-free, mouse-free tests for tracker.py. Run: .venv/bin/python test_tracker.py"""
 import socket
 import time
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
-from imu_taps import TapDetector, tap_datagram
+from imu_taps import TapDetector, tap_datagram, tap_features
 from tracker import (ARUCO_DICT, GESTURE_HOLD, GESTURE_MAX, SCROLL_GAIN, TRUST_FRAC, GestureEngine,
+                     ViewServer, pointing_hand, typing_flag,
                      release_touch, touch_step,
                      PinchDetector, ScreenTracker, TouchFuser, two_finger,
                      capture_time, choose_overlay_M, format_decision, tracking_age_guard,
@@ -296,7 +298,7 @@ def test_tap_udp_round_trip():
     tx.sendto(tap_datagram(123.5, 40.0), ("127.0.0.1", port))
     fuser = TouchFuser()
     drain_taps(sock, fuser)
-    assert list(fuser.taps) == [(123.5, 40.0)], list(fuser.taps)
+    assert list(fuser.taps) == [(123.5, 40.0, {})], list(fuser.taps)
     tx.close()
     sock.close()
 
@@ -533,7 +535,7 @@ def test_malformed_datagrams_ignored():
     tx.sendto(b'{"t": 12.5}', ("127.0.0.1", port))
     fuser = TouchFuser()
     drain_taps(sock, fuser)
-    assert list(fuser.taps) == [(12.5, None)], list(fuser.taps)
+    assert list(fuser.taps) == [(12.5, None, {})], list(fuser.taps)
     tx.close()
     sock.close()
 
@@ -854,6 +856,168 @@ def test_touch_fuser_reports_accepted_downs():
     assert len(fu.downs) == 1 and fu.downs[0][0] == 1.0 and np.hypot(fu.downs[0][1] - 500, fu.downs[0][2] - 300) < 1
 
 
+def _series(t0, t1, val=(0.0, 0.0, 0.0), dt=0.001):
+    """Samples (t, x, y, z) every dt from t0 to t1, all equal to val."""
+    return [(t0 + k * dt, *val) for k in range(int(round((t1 - t0) / dt)) + 1)]
+
+
+def _at(series, t):
+    return int(round((t - series[0][0]) / 0.001))  # index of the sample at time t (1 ms grid)
+
+
+def test_tap_features_window_and_components():
+    T = 1.0  # window [0.95, 1.15]
+    gyro = _series(0.7, 1.4)
+    gyro[_at(gyro, 1.02)] = (1.02, 3.0, -4.0, 0.0)  # |w| = 5 inside the window
+    gyro[_at(gyro, 1.3)] = (1.3, 100.0, 0.0, 0.0)   # outside the window: must be ignored
+    accel = _series(0.7, 1.4, (0.0, 0.0, 1.0))
+    for i in range(_at(accel, 1.01), len(accel)):  # a step of +0.5 on x at 1.01
+        accel[i] = (accel[i][0], 0.5, 0.0, 1.0)
+    lid = [(0.5, 100.0), (0.9, 100.0), (1.1, 97.0), (1.3, 97.0)]
+    f = tap_features(T, accel, gyro, lid)
+    assert abs(f["gyro_peak"] - 5.0) < 1e-9 and f["gyro_x"] == 3.0 and f["gyro_y"] == 4.0 and f["gyro_z"] == 0.0, f
+    assert abs(f["acc_peak"] - 0.5) < 1e-9 and f["acc_x"] == 0.5 and f["acc_y"] == 0.0 and f["acc_z"] == 0.0, f
+    assert abs(f["lid_delta"] - 3.0) < 1e-9, f  # 97 against the 100 read at 0.9, the last before the window
+    assert "lid_delta" not in tap_features(T, accel, gyro), "no lid samples: no lid feature"
+    assert tap_features(T, [], []) == {}  # no samples: no features at all
+    quiet = tap_features(T, _series(0.7, 1.4), _series(0.7, 1.4))
+    assert quiet["gyro_peak"] == 0.0 and quiet["acc_peak"] == 0.0, quiet  # the spike at 1.3 is outside
+
+
+def test_drain_keeps_valid_feature_fields():
+    sock = open_touch_socket(0)
+    port = sock.getsockname()[1]
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    tx.sendto(b'{"t": 5.0, "peak": 2.0, "gyro_peak": 3.5, "gyro_x": true, "gyro_y": "1", "gyro_z": NaN, '
+              b'"acc_peak": 9, "acc_x": -2.25, "acc_y": 1e400}', ("127.0.0.1", port))
+    tx.sendto(b'{"t": 6.0, "peak": true, "gyro_x": 1}', ("127.0.0.1", port))
+    tx.sendto(b'{"t": 7.0, "lid_delta": ' + b"9" * 320 + b'}', ("127.0.0.1", port))  # int too big for a float
+    time.sleep(0.05)  # loopback delivery is not always immediate: a non-blocking drain right after send can miss
+    fuser = TouchFuser()
+    drain_taps(sock, fuser)
+    assert list(fuser.taps) == [(5.0, 2.0, {"gyro_peak": 3.5, "acc_peak": 9.0, "acc_x": -2.25}),
+                                (6.0, None, {"gyro_x": 1.0}), (7.0, None, {})], list(fuser.taps)
+    tx.close()
+    sock.close()
+
+
+def test_decision_line_has_features_and_hands():
+    fu = TouchFuser()
+    _still_finger(fu, 500, 300, 0.0, 2.0)
+    fu.add_hands(1.0, 2)
+    fu.add_tap(1.0, 3.5, {"gyro_peak": 2.0, "gyro_x": 1.5, "acc_peak": 0.06, "lid_delta": 3.0})  # inside the limits
+    fu.poll(1.5)
+    (d,) = fu.decisions
+    assert d["hands"] == 2 and d["outcome"] == "CLICK", d
+    line = format_decision(d)
+    assert " hands=2 " in line and " g=2.0 gx=1.5 a=0.1 lid=3.0 " in line, line
+    fu = TouchFuser()  # no hand frames near the tap: hands is unknown, not 0
+    fu.add_tap(1.0)
+    fu.poll(2.0)
+    assert fu.decisions[0]["hands"] is None and " hands=- " in format_decision(fu.decisions[0])
+
+
+def test_pointing_hand_nearest_previous_tip():
+    def hand(x, y):  # 21 landmarks (normalised); only the index tip (8) matters here
+        return [SimpleNamespace(x=x, y=y) if i == 8 else SimpleNamespace(x=0.0, y=0.0) for i in range(21)]
+    hands = [hand(0.2, 0.2), hand(0.7, 0.6)]  # 1000 x 800 frame: index tips at (200, 160) and (700, 480)
+    assert pointing_hand(hands, 1000, 800, (690, 470)) == 1  # previous tip near the second hand
+    assert pointing_hand(hands, 1000, 800, (150, 150)) == 0
+    assert pointing_hand(hands[:1], 1000, 800, (690, 470)) == 0
+
+
+def _hand_at(x, y):
+    """21 landmarks (normalised) with the index tip (8) at (x, y); the rest sit at the origin."""
+    return [SimpleNamespace(x=x, y=y) if i == 8 else SimpleNamespace(x=0.0, y=0.0) for i in range(21)]
+
+
+def test_tap_strength_and_knock_gates():
+    def outcome(feats, **kw):
+        fu = TouchFuser(**kw)
+        _still_finger(fu, 500, 300, 0.0, 2.0)
+        fu.add_tap(1.0, 3.5, feats)
+        fu.poll(1.5)
+        return fu.decisions[0]["outcome"].split()[0]
+    assert outcome({"acc_peak": 0.0025}) == "weak"
+    assert outcome({"acc_peak": 0.006}) == "CLICK"
+    assert outcome({"acc_peak": 0.25, "gyro_peak": 10.0}) == "knock"
+    assert outcome({"acc_peak": 0.006, "gyro_peak": 10.0}) == "knock"  # gyro over 3 rad/s
+    assert outcome({}) == "CLICK" and outcome({"gyro_peak": 10.0}) == "CLICK"  # no acc field: as before
+    assert outcome({"acc_peak": 0.0025}, min_acc=0.002) == "CLICK"  # the limits are the fuser's arguments
+    assert outcome({"acc_peak": 0.006}, min_acc=0.01) == "weak"
+
+
+def test_typing_flag_over_keyboard():
+    M = np.eye(3)  # camera pixels = screen points; frame 1000 x 1000 px, screen 800 pt high
+    pointing = _hand_at(0.2, 0.2)
+    assert typing_flag([pointing, _hand_at(0.5, 1.2)], 0, 1000, 1000, M, True, 800) is True  # 400 pt under
+    assert typing_flag([pointing, _hand_at(0.5, 0.9)], 0, 1000, 1000, M, True, 800) is False  # 100 pt: within 150
+    assert typing_flag([pointing, _hand_at(0.6, 0.5)], 0, 1000, 1000, M, True, 800) is False  # on the screen
+    assert typing_flag([pointing, _hand_at(0.6, 0.5)], 0, 1000, 1000, M, False, 800) is True  # no fresh M
+    assert typing_flag([pointing], 0, 1000, 1000, M, True, 800) is False  # one hand: nothing to check
+    assert typing_flag([_hand_at(0.5, 1.2), _hand_at(0.6, 0.5)], 1, 1000, 1000, M, True, 800) is True  # 2nd is pointing
+
+
+def test_typing_gates_taps_in_window():
+    fu = TouchFuser()
+    _still_finger(fu, 500, 300, 0.0, 2.0)
+    fu.add_tap(1.0, 3.5, {})
+    fu.add_typing(1.1, True)  # inside the tap window
+    fu.poll(1.5)
+    assert fu.decisions[0]["outcome"] == "typing" and fu.decisions[0]["typing"] is True
+    assert "typing=1" in format_decision(fu.decisions[0])
+    fu = TouchFuser()
+    _still_finger(fu, 500, 300, 0.0, 2.0)
+    fu.add_tap(1.0)
+    fu.add_typing(0.9, False)
+    fu.add_typing(1.5, True)  # after the window: this tap is not typing
+    fu.poll(1.5)
+    assert fu.decisions[0]["outcome"] == "CLICK" and fu.decisions[0]["typing"] is False
+
+
+def test_tap_flags_validated():
+    assert parse_args(["--source", "0", "--touch"]).tap_min_acc == 0.004
+    assert parse_args(["--source", "0", "--tap-min-acc", "0.006"]).tap_min_acc == 0.006
+    for bad in (["--tap-min-acc", "0.08"], ["--tap-min-acc", "-1"], ["--tap-max-acc", "0.001"]):
+        try:
+            parse_args(["--source", "0", *bad])
+        except SystemExit:
+            continue
+        raise AssertionError(f"accepted {bad}")
+
+
+def test_view_server_mjpeg_and_host_check():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    view = ViewServer(port)
+    try:
+        view.hub.put(np.full((240, 960, 3), 90, np.uint8))  # 960 px wide: the stream is at most 540 px
+
+        def get(host):
+            c = socket.create_connection(("127.0.0.1", port), timeout=5)
+            c.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+            buf = b""
+            while not (b"\xff\xd8" in buf and b"\xff\xd9" in buf[buf.index(b"\xff\xd8"):]):
+                chunk = c.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            c.close()
+            return buf
+
+        buf = get(f"127.0.0.1:{port}")
+        head, body = buf.split(b"\r\n\r\n", 1)
+        assert b"200 OK" in head and b"multipart/x-mixed-replace" in head, head
+        assert b"--frame" in body and b"Content-Type: image/jpeg" in body, body[:200]
+        jpg = body[body.index(b"\xff\xd8"):body.index(b"\xff\xd9") + 2]
+        assert cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR).shape[1] == 540
+        assert b"403" in get(f"evil.example:{port}").split(b"\r\n", 1)[0]  # bad Host: refused
+    finally:
+        view.close()
+
+
 if __name__ == "__main__":
     for t in (test_marker_homography_roundtrip, test_homography_custom_targets,
               test_overlay_corner_homography_two_markers, test_collinear_corners_rejected,
@@ -874,6 +1038,11 @@ if __name__ == "__main__":
               test_tracking_only_for_9s_gives_no_source, test_drift_trap_markers_win_after_three_consistent_fits,
               test_gesture_tap_then_withdrawal_is_one_click,
               test_touch_fuser_reports_accepted_downs,
+              test_tap_features_window_and_components, test_drain_keeps_valid_feature_fields,
+              test_decision_line_has_features_and_hands, test_pointing_hand_nearest_previous_tip,
+              test_view_server_mjpeg_and_host_check,
+              test_tap_strength_and_knock_gates, test_typing_flag_over_keyboard,
+              test_typing_gates_taps_in_window, test_tap_flags_validated,
               test_gesture_400_still_taps_one_click_each, test_gesture_one_finger_drag_down_moves_one_up,
               test_gesture_slow_drag_stays_held_while_moving, test_gesture_two_finger_swipe_scrolls_no_button,
               test_gesture_stall_releases_held_drag, test_gesture_0p4s_frame_gap_keeps_drag,

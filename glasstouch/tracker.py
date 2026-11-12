@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.request
 from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PARENT_PID = os.getppid()  # before the slow imports below, so a parent that dies during them is still noticed
 
@@ -89,6 +90,13 @@ GESTURE_SMOOTH = 0.6         # drag position: weight of the newest fingertip sam
 GESTURE_HIST = 3.0           # fingertip frames kept so a late-accepted touch-down can be replayed
 SCROLL_GAIN = 0.1            # finger points -> scroll units (about 10 pt per unit)
 SCROLL_DEADBAND = 3.0        # scrolling ignores finger motion below this many points (jitter)
+VIEW_MAX_W = 540             # --view-port: frames are at most this wide ...
+VIEW_FPS = 15                # ... and at most this many a second (shared by all clients)
+TAP_FEATURES = {"gyro_peak": "g", "gyro_x": "gx", "gyro_y": "gy", "gyro_z": "gz", "acc_peak": "a",
+                "acc_x": "ax", "acc_y": "ay", "acc_z": "az", "lid_delta": "lid"}  # imu_taps.py fields -> debug names
+TAP_MIN_ACC, TAP_MAX_ACC = 0.004, 0.08  # accel change (g) of a screen tap: below min is weak, above max a knock
+TAP_MAX_GYRO = 3.0    # rad/s: a bigger gyro peak is a knock on the case, not a tap on the screen
+TYPING_BELOW = 150.0  # points: a second hand whose index tip is this far under the screen is over the keyboard
 
 
 def detect_marker_corners(frame):
@@ -479,7 +487,7 @@ def make_hand_landmarker():
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH + ".part")
         os.replace(MODEL_PATH + ".part", MODEL_PATH)
     opts = HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=MODEL_PATH),
-                                 running_mode=RunningMode.VIDEO, num_hands=1)
+                                 running_mode=RunningMode.VIDEO, num_hands=2)  # 2 so the other hand is logged
     return HandLandmarker.create_from_options(opts)
 
 
@@ -499,6 +507,80 @@ def draw_debug(frame, centres, lm, pinched, status, redetected=(), m_source=None
     direct = sorted(i for i in centres if i not in redetected)
     cv2.putText(frame, f"ids direct {direct} re-detected {sorted(redetected)} M from {m_source or 'none'}",
                 (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+
+class FrameHub:
+    """Latest annotated frame as JPEG for the view clients. put() replaces the frame (no queue) and encodes at most
+    VIEW_FPS times a second; get() blocks until a frame newer than `seen` arrives."""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.jpg, self.seq, self.last = None, 0, -1e9
+
+    def put(self, frame):
+        now = time.monotonic()
+        if now - self.last < 1 / VIEW_FPS:
+            return
+        self.last = now
+        h, w = frame.shape[:2]
+        if w > VIEW_MAX_W:
+            frame = cv2.resize(frame, (VIEW_MAX_W, round(h * VIEW_MAX_W / w)), interpolation=cv2.INTER_AREA)
+        jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
+        with self.cond:
+            self.jpg, self.seq = jpg, self.seq + 1
+            self.cond.notify_all()
+
+    def get(self, seen):
+        with self.cond:
+            self.cond.wait_for(lambda: self.seq != seen)
+            return self.seq, self.jpg
+
+
+class ViewHandler(BaseHTTPRequestHandler):
+    """Any GET streams the view as multipart JPEG. Only the local Host names are served (DNS rebinding)."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        port = self.server.server_port
+        if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self.send_error(403)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        seen = 0
+        try:
+            while True:
+                seen, jpg = self.server.hub.get(seen)
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n" % len(jpg)
+                                 + jpg + b"\r\n")
+                self.wfile.flush()
+        except OSError:
+            pass  # the client went away
+
+
+class ViewServer(ThreadingHTTPServer):
+    """--view-port: the debug view on 127.0.0.1 from a daemon thread. The thread polls handle_request, so close()
+    can stop it without shutdown() (which would hang if the thread had not started its loop yet)."""
+    timeout = 0.5
+
+    def __init__(self, port):
+        super().__init__(("127.0.0.1", port), ViewHandler)
+        self.hub, self.stopping = FrameHub(), threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        while not self.stopping.is_set():
+            self.handle_request()
+
+    def close(self):
+        self.stopping.set()
+        self.thread.join()
+        self.server_close()
 
 
 def marker_png(i):
@@ -632,15 +714,35 @@ def hand_exclusion(lm, w, h, r=20):
     return cv2.convexHull(grown.astype(np.float32)).reshape(-1, 2)
 
 
+def pointing_hand(hands, w, h, ref):
+    """Index in MediaPipe's hand list (non-empty) of the pointing hand: the one whose index tip is nearest ref
+    (camera pixels). The other hands are only counted (hands= in the touch log)."""
+    return min(range(len(hands)), key=lambda i: math.hypot(hands[i][8].x * w - ref[0], hands[i][8].y * h - ref[1]))
+
+
+def typing_flag(hands, pointing, w, h, M, fresh, H, below=TYPING_BELOW):
+    """True when a hand other than the pointing one (index in `hands`) is over the keyboard: its index tip, mapped
+    through M, is more than `below` points under the screen (height H), or there is no fresh M to map it with."""
+    others = [hd for i, hd in enumerate(hands) if i != pointing]
+    if not others:
+        return False
+    if not fresh or M is None:
+        return True
+    return bool(raw_map(M, (others[0][8].x * w, others[0][8].y * h))[1] > H + below)
+
+
 class TouchFuser:
     """Pair sensor taps with the fingertip. A tap is accepted when an on-screen fingertip sample lies within
     TOUCH_WINDOW of it, and its point is the fingertip at the tap time (contact_point). Fingertip times are capture
     times (arrival minus camera latency); poll() decides taps at least TOUCH_SETTLE old. Every tap poll() decides or
     drops is recorded in self.decisions (see format_decision)."""
 
-    def __init__(self):
+    def __init__(self, min_acc=TAP_MIN_ACC, max_acc=TAP_MAX_ACC):
+        self.min_acc, self.max_acc = min_acc, max_acc  # tap strength limits (accel change, g)
         self.samples = deque()  # (t, x, y, on_screen)
-        self.taps = deque()     # (tap time, peak or None) from imu_taps.py
+        self.hands = deque()    # (t, hands MediaPipe saw in that frame)
+        self.typing = deque()   # (t, True when a second hand was over the keyboard in that frame)
+        self.taps = deque()     # (tap time, peak or None, feature dict) from imu_taps.py
         self.last_click = None  # tap time of the last accepted click
         self.decisions = []     # debug records from the last poll()
         self.downs = []        # (tap time, x, y) of the touch-downs accepted by the last poll()
@@ -648,17 +750,28 @@ class TouchFuser:
     def add_fingertip(self, t, x, y, on_screen):
         self.samples.append((t, x, y, on_screen))
 
-    def add_tap(self, t, peak=None):
-        self.taps.append((t, peak))
+    def add_hands(self, t, n):
+        self.hands.append((t, n))
+
+    def add_typing(self, t, flag):
+        self.typing.append((t, bool(flag)))
+
+    def _typing(self, tap):
+        return any(f and tap + TOUCH_WINDOW[0] <= t <= tap + TOUCH_WINDOW[1] for t, f in self.typing)
+
+    def add_tap(self, t, peak=None, feats=None):
+        self.taps.append((t, peak, feats or {}))
 
     def _window(self, tap):
         return [(t, x, y, on) for t, x, y, on in self.samples if tap + TOUCH_WINDOW[0] <= t <= tap + TOUCH_WINDOW[1]]
 
-    def _record(self, tap, peak, outcome, point=None):
+    def _record(self, tap, peak, outcome, point=None, feats=None):
         offs = [t - tap for t, *_ in self.samples]
         ctx = [o for o in offs if abs(o) <= 0.5]  # the 1 s around the tap
+        seen = [n for t, n in self.hands if tap + TOUCH_WINDOW[0] <= t <= tap + TOUCH_WINDOW[1]]
         self.decisions.append({
             "tap": tap, "outcome": outcome, "peak": peak, "n": len(self._window(tap)),
+            "hands": max(seen) if seen else None, "typing": self._typing(tap), "feats": feats or {},
             "nearest_ms": min(offs, key=abs) * 1000 if offs else None,
             "ctx_n": len(ctx), "ctx_min_ms": min(ctx) * 1000 if ctx else None,
             "ctx_max_ms": max(ctx) * 1000 if ctx else None,
@@ -671,14 +784,21 @@ class TouchFuser:
         TOUCH_MIN_GAP of the last accepted click is dropped (one knock can ring twice)."""
         clicks, self.decisions, self.downs = [], [], []
         while self.taps and now - self.taps[0][0] > TOUCH_TAP_AGE:
-            tap, peak = self.taps.popleft()
-            self._record(tap, peak, "stale")
+            tap, peak, feats = self.taps.popleft()
+            self._record(tap, peak, "stale", feats=feats)
         while self.taps and now - self.taps[0][0] >= TOUCH_SETTLE:
-            tap, peak = self.taps.popleft()
+            tap, peak, feats = self.taps.popleft()
             near = self._window(tap)
             point = None
+            acc = feats.get("acc_peak")  # taps from an old helper have no strength fields: no strength checks
             if self.last_click is not None and tap - self.last_click < TOUCH_MIN_GAP:
                 outcome = "gap"
+            elif acc is not None and acc < self.min_acc:
+                outcome = f"weak acc={acc:.4f}"
+            elif acc is not None and (acc > self.max_acc or feats.get("gyro_peak", 0.0) > TAP_MAX_GYRO):
+                outcome = f"knock acc={acc:.3f} gyro={feats.get('gyro_peak', 0.0):.1f}"
+            elif self._typing(tap):
+                outcome = "typing"
             elif not near:
                 outcome = "no-samples"
             elif not min(near, key=lambda s: abs(s[0] - tap))[3]:  # the nearest sample is off screen (keyboard)
@@ -694,9 +814,13 @@ class TouchFuser:
                     clicks.append(point)
                     self.downs.append((tap, *point))
                     self.last_click = tap
-            self._record(tap, peak, outcome, point)
+            self._record(tap, peak, outcome, point, feats)
         while self.samples and now - self.samples[0][0] > TOUCH_SAMPLE_AGE:
             self.samples.popleft()
+        while self.hands and now - self.hands[0][0] > TOUCH_SAMPLE_AGE:
+            self.hands.popleft()
+        while self.typing and now - self.typing[0][0] > TOUCH_SAMPLE_AGE:
+            self.typing.popleft()
         return clicks
 
 
@@ -729,7 +853,10 @@ def format_decision(d):
     peak = "-" if d["peak"] is None else f"{d['peak']:.1f}"
     ctx = "" if not d["ctx_n"] else f" [{d['ctx_min_ms']:+.0f}..{d['ctx_max_ms']:+.0f}ms]"
     pt = "" if d.get("point") is None else f" point=({d['point'][0]:.0f},{d['point'][1]:.0f})"
-    return (f"touch tap={d['tap']:.3f} {d['outcome']} n={d['n']} nearest={nearest} peak={peak} "
+    hands = "-" if d.get("hands") is None else d["hands"]
+    feats = "".join(f" {short}={d['feats'][k]:.1f}" for k, short in TAP_FEATURES.items() if k in d.get("feats", {}))
+    return (f"touch tap={d['tap']:.3f} {d['outcome']} n={d['n']} hands={hands} typing={int(d.get('typing', False))} "
+            f"nearest={nearest} peak={peak}{feats} "
             f"ctx1s={d['ctx_n']}{ctx}{pt} xy={d.get('xy', [])}")
 
 
@@ -933,9 +1060,21 @@ def open_touch_socket(port):
     return sock
 
 
+def _number(v):
+    """float for a finite int or float (not bool), else None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:
+        return None
+    return f if math.isfinite(f) else None
+
+
 def drain_taps(sock, fuser, limit=TOUCH_DRAIN_MAX):
     """Feed up to `limit` queued tap datagrams to the fuser. Malformed datagrams are ignored; t must be a finite
-    int or float (not bool, not a string)."""
+    int or float (not bool, not a string). The optional peak and motion features (TAP_FEATURES) are kept only
+    when they pass _number; the rest are dropped."""
     for _ in range(limit):
         try:
             data = sock.recv(512)
@@ -949,11 +1088,10 @@ def drain_taps(sock, fuser, limit=TOUCH_DRAIN_MAX):
             t = float(t)
         except (ValueError, KeyError, TypeError, OverflowError):
             continue
-        peak = obj.get("peak")  # optional: the sensor's peak, shown by --touch-debug
-        peak = float(peak) if isinstance(peak, (int, float)) and not isinstance(peak, bool) and abs(peak) < math.inf \
-            else None
+        peak = _number(obj.get("peak"))  # optional: the sensor's peak, shown by --touch-debug
+        feats = {k: v for k in TAP_FEATURES if (v := _number(obj.get(k))) is not None}
         if math.isfinite(t):
-            fuser.add_tap(t, peak)
+            fuser.add_tap(t, peak, feats)
 
 
 def capture_time(arrival, camera_latency):
@@ -1014,12 +1152,19 @@ def run(args):
     overlay, targets = None, None
     touch_sock, touch_flash = None, None  # touch_flash: ((x, y) screen point, monotonic time to stop showing)
     engine = GestureEngine()  # touch-downs and fingertip frames -> click / drag / scroll actions
+    view, prev_tip = None, None  # prev_tip: last frame's pointing fingertip (camera px), None without a hand
     try:
+        if args.view_port:
+            try:
+                view = ViewServer(args.view_port)
+            except OSError as e:
+                raise SystemExit(f"cannot serve the view on 127.0.0.1:{args.view_port} ({e}); "
+                                 "another process may hold it.")
         if args.show_markers:
             overlay, targets = start_overlay(args.marker_size)
         tracker = ScreenTracker(W, H, overlay_regions(targets) if targets is not None else None)
         hand_poly = None  # previous frame's hand, kept out of the tracker's features
-        fuser = TouchFuser()
+        fuser = TouchFuser(args.tap_min_acc, args.tap_max_acc)
         if args.touch:
             touch_sock = open_touch_socket(args.touch_port)
         last_frame_wall = time.monotonic()  # wall clock of the last camera frame (stall detection)
@@ -1085,7 +1230,15 @@ def run(args):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             last_ts = max(int((now - t0) * 1000), last_ts + 1)  # VIDEO mode needs strictly increasing timestamps
             res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), last_ts)
-            lm = res.hand_landmarks[0] if res.hand_landmarks else None
+            h, w = frame.shape[:2]
+            lm, k = None, None
+            if res.hand_landmarks:  # the pointing hand: nearest the last fingertip, else nearest the screen centre
+                ref = prev_tip
+                if ref is None:
+                    ref = raw_map(np.linalg.inv(M), (W / 2, H / 2)) if M is not None else (w / 2, h / 2)
+                k = pointing_hand(res.hand_landmarks, w, h, ref)
+                lm = res.hand_landmarks[k]
+            prev_tip = (lm[8].x * w, lm[8].y * h) if lm is not None else None
             if args.touch_debug:  # once a second: is the hand found, where M comes from, is the loop keeping up
                 stats["frames"] += 1
                 stats["hand"] += lm is not None
@@ -1096,12 +1249,13 @@ def run(args):
                               f"M markers={stats['markers']} tracking={stats['tracking']} none={stats['none']} "
                               f"proc={1000 * stats['proc'] / n:.0f}ms wait={1000 * stats['wait'] / n:.0f}ms")
                     stats.update(t=now, frames=0, hand=0, markers=0, tracking=0, none=0, wait=0.0, proc=0.0)
-            h, w = frame.shape[:2]
             hand_poly = hand_exclusion(lm, w, h) if lm is not None else None
             status, ev = ("no hand" if lm is None else "tracking"), None
             if args.touch:
                 drain_taps(touch_sock, fuser)
                 cap = capture_time(now, args.camera_latency)
+                fuser.add_hands(cap, len(res.hand_landmarks))
+                fuser.add_typing(cap, typing_flag(res.hand_landmarks, k, w, h, M, source is not None, H))
                 # no camera frame for GESTURE_STALL while a button is held: release it before this frame
                 acts = engine.release() if engine.held and now - last_frame_wall > GESTURE_STALL else []
                 last_frame_wall = now
@@ -1152,9 +1306,12 @@ def run(args):
                 cx, cy = raw_map(np.linalg.inv(M), touch_flash[0])  # screen point back into the camera image
                 cv2.circle(frame, (int(cx), int(cy)), 14, (255, 0, 255), 3)
             draw_debug(frame, centres, lm, pinch.down, status, redetected, source)
-            cv2.imshow("glasstouch", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+            if view is not None:
+                view.hub.put(frame)
+            if not args.no_window:
+                cv2.imshow("glasstouch", frame)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
     except (KeyboardInterrupt, pyautogui.FailSafeException) as e:
         print(f"stopped: {type(e).__name__}")
     finally:
@@ -1165,6 +1322,8 @@ def run(args):
                 touch_sock.close()
             if overlay is not None:
                 stop_overlay(overlay)
+            if view is not None:
+                view.close()
             src.release()
             landmarker.close()
             cv2.destroyAllWindows()
@@ -1198,10 +1357,20 @@ def parse_args(argv=None):
                    help="with --touch: print one line per tap (CLICK or the reason it was rejected)")
     p.add_argument("--camera-latency", type=float, default=0.3, metavar="S",
                    help="seconds camera frames lag real time (default 0.3)")
+    p.add_argument("--tap-min-acc", type=float, default=TAP_MIN_ACC, metavar="G",
+                   help="with --touch: reject taps whose accel change is below this, in g (default 0.004)")
+    p.add_argument("--tap-max-acc", type=float, default=TAP_MAX_ACC, metavar="G",
+                   help="with --touch: reject taps whose accel change is above this, a knock (default 0.08)")
+    p.add_argument("--view-port", type=int, metavar="N",
+                   help="serve the annotated debug frame as MJPEG on 127.0.0.1:N (the control panel shows it)")
+    p.add_argument("--no-window", action="store_true",
+                   help="no OpenCV window (the q key is then unavailable; stop with Ctrl-C)")
     p.add_argument("--overlay-child", type=int, help=argparse.SUPPRESS)  # internal: marker overlay process
     a = p.parse_args(argv)
     if not (a.make_markers or a.overlay_child is not None) and bool(a.source) == bool(a.region):
         p.error("give exactly one of --source or --region")
+    if not 0 <= a.tap_min_acc < a.tap_max_acc:
+        p.error("need 0 <= --tap-min-acc < --tap-max-acc")
     return a
 
 
