@@ -704,6 +704,15 @@ def test_gesture_double_tap_drag_down_moves_one_up():
     assert not eng.held
 
 
+def test_gesture_double_tap_drag_even_if_pose_reads_two_fingers():
+    # live bug: the two-finger check said yes during a one-finger double-tap drag, and it scrolled instead
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.6, _swipe(t0=1.45), two=True), 1.0, 1.45))
+    kinds = [a[0] for _, a in timed]
+    assert "scroll" not in kinds and "point" not in kinds, kinds
+    assert kinds.count("down") == 1 and kinds.count("up") == 1 and kinds.count("move") > 10, kinds
+    assert not eng.held
+
+
 def test_gesture_double_tap_still_is_two_clicks():
     # two taps 0.45 s apart, no move: two clicks (the second when its window closes), and no down
     timed, eng = _drive(_with_tap(_frames(0.0, 2.2, lambda t: (500.0, 300.0)), 1.0, 1.45))
@@ -1194,7 +1203,7 @@ if __name__ == "__main__":
               test_view_server_mjpeg_and_host_check,
               test_tap_strength_and_knock_gates, test_typing_flag_over_keyboard,
               test_typing_gates_taps_in_window, test_tap_flags_validated,
-              test_gesture_400_still_taps_one_click_each, test_gesture_double_tap_drag_down_moves_one_up,
+              test_gesture_400_still_taps_one_click_each, test_gesture_double_tap_drag_down_moves_one_up, test_gesture_double_tap_drag_even_if_pose_reads_two_fingers,
               test_gesture_double_tap_still_is_two_clicks, test_gesture_taps_one_second_apart_are_two_clicks,
               test_gesture_two_finger_scroll_ends_when_pose_lost,
               test_gesture_slow_drag_stays_held_while_moving, test_gesture_two_finger_swipe_scrolls_no_button,

@@ -950,7 +950,8 @@ class GestureEngine:
     """Touch-downs and fingertip frames to mouse actions. Pure: no pyautogui.
     A one-finger touch-down (tap time from TouchFuser) is a click at once, and nothing after it can be a drag. Two
     fingers (majority vote of two_finger over the frames after the touch-down) that move more than GESTURE_MOVE scroll
-    at once; two fingers still for GESTURE_DECIDE are a click, and a later move still scrolls. A touch-down within
+    at once; two fingers still for GESTURE_DECIDE are a click, and the touch ends there. A double-tap press
+    that moves is always a drag, whatever the two-finger check says. A touch-down within
     GESTURE_DOUBLE s and GESTURE_DOUBLE_DIST of the last click is a press, decided within GESTURE_DECIDE: moved more
     than GESTURE_MOVE it is a drag (down at the touch point, moves, up on lift-off); still, it is a second click.
     A drag ends on lift-off: the fingertip has come to rest (average speed below GESTURE_LIFT_SPEED over
@@ -1039,12 +1040,14 @@ class GestureEngine:
             if self.lost_n >= 2:
                 self.state = None
                 return []
-        elif t - t0 >= GESTURE_DECIDE:  # still for the whole window: a click (two fingers keep a scroll open)
-            self.state, self.lost_n = ("press" if two_f else None), 0
+        elif t - t0 >= GESTURE_DECIDE:  # still for the whole window: a click, and the touch is over (keeping a
+            # two-finger touch open made the hand's withdrawal scroll, live, when the pose check misread one finger)
+            self.state, self.lost_n = None, 0
             return [self._click(t0, px, py)]
         if not (on and math.hypot(x - px, y - py) > GESTURE_MOVE):
             return []
-        if two_f:  # two fingers: scroll at once
+        if two_f and not self.double:  # two fingers: scroll at once (a double-tap press is always a drag: live, the
+            # two-finger check said yes during one-finger drags and turned every drag into a scroll)
             self.state, self.t_gesture, self.lost_n = "scroll", t, 0
             return [("point", px, py)] + self._track_frame(t, x, y, on, two)
         if self.state == "press":  # a tap that was clicked never becomes a drag
