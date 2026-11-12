@@ -1,0 +1,20 @@
+# Known issues and gotchas
+
+- pyautogui FAILSAFE fires at all 4 screen corners. `map_point` clamps to [1, W-2] x [1, H-2] so the tracker never parks the cursor on a corner.
+- On macOS, `pyautogui.moveTo` sends plain mouse moves, not drags. While pinched, use `dragTo(..., mouseDownUp=False)`.
+- `--region` units (Retina points vs pixels) are unverified. If the capture is offset, try halving or doubling the values.
+- With a free Apple ID, an app installed on the iPhone stops opening after 7 days. Rebuild it to reinstall.
+- On macOS, git and xcodebuild both refuse to run until the Xcode license is accepted (`sudo xcodebuild -license accept`).
+- The `reviewer` agent didn't use `glasstouch/.venv` and so assumed the dependencies were missing. Tell it to use `.venv/bin/python`.
+- A free (personal) Apple team can't sign the Hotspot Configuration or Access Wi-Fi Information capabilities, so both were removed from `CameraAccess.entitlements`. Meta's docs say Wi-Fi camera streaming needs Hotspot, but another page says streaming runs over Bluetooth Classic. Tested 2026-11-11: it does NOT work. Preview hangs, and the phone log shows `NEHotspotConfigurationHelper failed to communicate to helper server` each time Preview is tapped (the SDK tries to join the glasses' Wi-Fi). Live streaming with SDK 0.6.0+ on iOS needs a paid Apple Developer Program membership. **Workaround (works, tested 2026-11-11):** `GlassesCamBT/` is Meta's CameraAccess sample at SDK 0.5.0 (main commit 28a81e1), which streams over Bluetooth with no Hotspot entitlement. Risk: newer glasses firmware could stop accepting 0.5.0 at any update.
+- The 0.5.0 sample ships with manual signing on Meta's team (V9WTTPBFK9, "Facebook Generic" profile). Switch to automatic signing with your own team.
+- `xcodebuild -destination 'id=<phone>'` fails with a "My Mac" error while the phone is locked or "unavailable". Unlock it, or build with `generic/platform=iOS` and install with `xcrun devicectl device install app`.
+- Live stream quality is well below on-glasses recordings: Bluetooth bandwidth forces per-frame compression (Meta docs), and the resolution ladder drops 720x1280 to 504x896. Lower fps gives sharper frames; GlassesCamBT now asks for 15 fps and sends JPEG at 0.85.
+- `--show-markers` overlay: the windows exist on screen, but the tracker's own screenshot check needs Screen Recording permission; the camera test doesn't.
+- Real cursor control needs macOS Accessibility permission for the app that runs the tracker (Terminal, or Claude when using its terminal pane); without it pyautogui fails silently. tracker.py now exits with a clear message when the permission is missing (dry-run excepted).
+- Never run `sudo .venv/bin/python imu_taps.py`: the venv, the script and Homebrew's Python are user-writable, so that is a local privilege-escalation path. Use the root-owned copy in /usr/local/libexec/glasstouch with /usr/bin/python3 (root-owned Xcode Python), per README. Re-copy after editing imu_taps.py.
+- Touch has no contact check: a still fingertip on the screen plus any knock to the laptop counts as a touch.
+- Touch thresholds must fit the frame rate: the tap window (-0.15..+0.10 s) holds only 3-4 frames at 15 fps, so TOUCH_MIN_SAMPLES=5 made every tap fail silently (fixed: 3). Spread limit raised 25 → 40 pt because the tapping motion moves the fingertip. Re-tune if the fps changes.
+- Threat model (accepted for a single-user Mac on a trusted network): the panel token stops web pages (CSRF, DNS rebinding) but not other local accounts or local processes; the phone's MJPEG stream and the tap datagrams on 127.0.0.1:9787 are unauthenticated, so someone on the same Wi-Fi or the same Mac could inject frames or taps. Fixing this needs authenticated transport end to end.
+- install_helper.sh runs whatever is in the repo as root at the moment you run it: only run it on code you trust.
+- ArUco at ~32 px: the default perspectiveRemoveIgnoredMarginPerCell (0.13) misreads thin-celled ids (0, 2) under blur. Keep 0.3 / 8 px per cell (tracker.make_marker_detector). Synthetic blur tests did not reproduce this; only real frames did.

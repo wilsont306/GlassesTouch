@@ -1,0 +1,10 @@
+.DS_Store
+# Python tracker
+.venv/
+__pycache__/
+glasstouch/models/
+# Xcode
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
