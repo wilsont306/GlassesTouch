@@ -94,7 +94,7 @@ VIEW_MAX_W = 540             # --view-port: frames are at most this wide ...
 VIEW_FPS = 15                # ... and at most this many a second (shared by all clients)
 TAP_FEATURES = {"gyro_peak": "g", "gyro_x": "gx", "gyro_y": "gy", "gyro_z": "gz", "acc_peak": "a",
                 "acc_x": "ax", "acc_y": "ay", "acc_z": "az", "lid_delta": "lid"}  # imu_taps.py fields -> debug names
-TAP_MIN_ACC, TAP_MAX_ACC = 0.004, 0.08  # accel change (g) of a screen tap: below min is weak, above max a knock
+TAP_MIN_ACC, TAP_MAX_ACC = 0.003, 0.08  # accel change (g) of a screen tap: below min is weak, above max a knock
 TAP_MAX_GYRO = 3.0    # rad/s: a bigger gyro peak is a knock on the case, not a tap on the screen
 TYPING_BELOW = 150.0  # points: a second hand whose index tip is this far under the screen is over the keyboard
 
@@ -714,10 +714,12 @@ def hand_exclusion(lm, w, h, r=20):
     return cv2.convexHull(grown.astype(np.float32)).reshape(-1, 2)
 
 
-def pointing_hand(hands, w, h, ref):
-    """Index in MediaPipe's hand list (non-empty) of the pointing hand: the one whose index tip is nearest ref
-    (camera pixels). The other hands are only counted (hands= in the touch log)."""
-    return min(range(len(hands)), key=lambda i: math.hypot(hands[i][8].x * w - ref[0], hands[i][8].y * h - ref[1]))
+def pointing_hand(hands, w, h, ref, on_screen=None):
+    """Index in MediaPipe's hand list (non-empty) of the pointing hand: among the hands whose index tip is on the
+    screen (on_screen, a list of bools; all hands if none is), the one whose tip is nearest ref (camera pixels).
+    Preferring on-screen tips stops it sticking to a hand that moved to the keyboard."""
+    pick = [i for i in range(len(hands)) if on_screen and on_screen[i]] or range(len(hands))
+    return min(pick, key=lambda i: math.hypot(hands[i][8].x * w - ref[0], hands[i][8].y * h - ref[1]))
 
 
 def typing_flag(hands, pointing, w, h, M, fresh, H, below=TYPING_BELOW):
@@ -1236,7 +1238,10 @@ def run(args):
                 ref = prev_tip
                 if ref is None:
                     ref = raw_map(np.linalg.inv(M), (W / 2, H / 2)) if M is not None else (w / 2, h / 2)
-                k = pointing_hand(res.hand_landmarks, w, h, ref)
+                on = None
+                if M is not None and source is not None:  # fresh M: which hands point at the screen
+                    on = [screen_point(raw_map(M, (hd[8].x * w, hd[8].y * h)), W, H)[1] for hd in res.hand_landmarks]
+                k = pointing_hand(res.hand_landmarks, w, h, ref, on)
                 lm = res.hand_landmarks[k]
             prev_tip = (lm[8].x * w, lm[8].y * h) if lm is not None else None
             if args.touch_debug:  # once a second: is the hand found, where M comes from, is the loop keeping up
@@ -1358,7 +1363,7 @@ def parse_args(argv=None):
     p.add_argument("--camera-latency", type=float, default=0.3, metavar="S",
                    help="seconds camera frames lag real time (default 0.3)")
     p.add_argument("--tap-min-acc", type=float, default=TAP_MIN_ACC, metavar="G",
-                   help="with --touch: reject taps whose accel change is below this, in g (default 0.004)")
+                   help="with --touch: reject taps whose accel change is below this, in g (default 0.003)")
     p.add_argument("--tap-max-acc", type=float, default=TAP_MAX_ACC, metavar="G",
                    help="with --touch: reject taps whose accel change is above this, a knock (default 0.08)")
     p.add_argument("--view-port", type=int, metavar="N",

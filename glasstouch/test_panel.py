@@ -58,7 +58,7 @@ def test_argv():
     tr = panel.tracker_script()
     py = panel.venv_python()
     s = panel.parse_settings({"source": "10.0.0.5"})  # defaults: touch, markers, debug on; dry run off
-    view = ["--view-port", "8767", "--no-window", "--tap-min-acc", "0.004"]  # 0.004: the panel's default strength
+    view = ["--view-port", "8767", "--no-window", "--tap-min-acc", "0.003"]  # 0.003: the panel's default strength
     assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", *view,
                                    "--show-markers", "--touch", "--touch-debug"], panel.build_argv(s)
     s = panel.parse_settings({"source": "http://phone.local:8080/", "touch": False, "show_markers": False,

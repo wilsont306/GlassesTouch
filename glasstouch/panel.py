@@ -33,7 +33,7 @@ VIEW_PORT = 8767  # the tracker's --view-port: its annotated debug frame, shown 
 MARKER_MIN, MARKER_MAX = 40, 1000  # tracker.py refuses < 40; the upper bound is a sanity limit
 NOISE = ("I0000", "W0000", "INFO: Created")  # MediaPipe / TF startup chatter, hidden from the log
 PROBLEM = re.compile(r"cannot|Accessibility|rror|Traceback|died|exited")
-TAP_MIN_DEFAULT, TAP_MIN_MAX = 0.004, 0.05  # --tap-min-acc (g): the panel's range; tracker's max stays 0.08
+TAP_MIN_DEFAULT, TAP_MIN_MAX = 0.003, 0.05  # --tap-min-acc (g): the panel's range; tracker's max stays 0.08
 DEFAULTS = {"source": "", "touch": True, "show_markers": True, "dry_run": False, "touch_debug": True,
             "marker_size": None, "tap_min_acc": TAP_MIN_DEFAULT}
 BOOLS = ("touch", "show_markers", "dry_run", "touch_debug")

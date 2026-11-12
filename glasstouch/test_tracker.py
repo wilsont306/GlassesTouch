@@ -924,6 +924,9 @@ def test_pointing_hand_nearest_previous_tip():
     assert pointing_hand(hands, 1000, 800, (690, 470)) == 1  # previous tip near the second hand
     assert pointing_hand(hands, 1000, 800, (150, 150)) == 0
     assert pointing_hand(hands[:1], 1000, 800, (690, 470)) == 0
+    # live bug: the previous tip was the keyboard hand; the hand on the screen must win anyway
+    assert pointing_hand(hands, 1000, 800, (690, 470), on_screen=[True, False]) == 0
+    assert pointing_hand(hands, 1000, 800, (690, 470), on_screen=[False, False]) == 1  # none on screen: nearest
 
 
 def _hand_at(x, y):
@@ -976,7 +979,7 @@ def test_typing_gates_taps_in_window():
 
 
 def test_tap_flags_validated():
-    assert parse_args(["--source", "0", "--touch"]).tap_min_acc == 0.004
+    assert parse_args(["--source", "0", "--touch"]).tap_min_acc == 0.003
     assert parse_args(["--source", "0", "--tap-min-acc", "0.006"]).tap_min_acc == 0.006
     for bad in (["--tap-min-acc", "0.08"], ["--tap-min-acc", "-1"], ["--tap-max-acc", "0.001"]):
         try:
