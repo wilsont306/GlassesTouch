@@ -8,7 +8,7 @@ import numpy as np
 
 from imu_taps import TapDetector, tap_datagram, tap_features
 from tracker import (ARUCO_DICT, GESTURE_MAX, SCROLL_GAIN, TOUCH_SETTLE, TRUST_FRAC, GestureEngine,
-                     ViewServer, pointing_hand, typing_flag,
+                     ViewServer, pointing_hand, typing_flag, drop_occluded, fit_markers, overlay_fix, _side,
                      release_touch, touch_step,
                      PinchDetector, ScreenTracker, TouchFuser, two_finger,
                      capture_time, choose_overlay_M, format_decision, tracking_age_guard,
@@ -400,7 +400,7 @@ def test_diagonal_pair_trust():
                                        np.float32([[120, 520], [600, 380], [560, 820], [60, 700]]))
     # tracker M ~1.4 px from the truth; 2-marker diagonal fit from corners with +-2 px noise
     M_track = np.linalg.inv(TILT) @ np.float64([[1, 0, 1], [0, 1, -1], [0, 0, 1]])
-    tc, thr, exceeded = _true_corners(TILT), TRUST_FRAC * OCAM[0], 0
+    tc, thr, exceeded, guarded = _true_corners(TILT), TRUST_FRAC * OCAM[0], 0, 0
     for seed in range(300):
         rng = np.random.default_rng(seed)
         for pair in ((0, 2), (1, 3)):
@@ -408,12 +408,17 @@ def test_diagonal_pair_trust():
             M_pair = homography_from_corners(corners, OTARGETS)
             d = np.linalg.norm(screen_quad(M_pair, OW, OH) - screen_quad(M_track, OW, OH), axis=1).mean()
             M, source, reset = choose_overlay_M(corners, OTARGETS, M_track, OW, OH, OCAM[0])
+            # the consistency guard rejects a noisy fit whose own corners sit > REPROJ_PX off it: the tracker M
+            rejected = fit_markers(corners, OTARGETS, OW, OH)[0] is None
+            guarded += rejected
             if d > thr:
                 exceeded += 1
+            if d > thr or rejected:
                 assert source == "tracking" and not reset and np.array_equal(M, M_track), (seed, pair, d)
             else:
                 assert source == "markers" and np.array_equal(M, M_pair), (seed, pair, d)
-    print(f"  diagonal pairs, 600 noisy fits: {exceeded} disagree by more than {thr:.1f} px and keep the tracker M")
+    print(f"  diagonal pairs, 600 noisy fits: {exceeded} disagree by more than {thr:.1f} px and keep the tracker M; "
+          f"{guarded} rejected by the consistency guard")
     assert exceeded >= 10, f"only {exceeded} fits exceeded the threshold: the rule was not exercised"
     # same-side pair with no tracker M: used, and it restarts the tracker; diagonal pair: used, no restart
     _, source, reset = choose_overlay_M({i: tc[i] for i in (0, 1)}, OTARGETS, None, OW, OH, OCAM[0])
@@ -863,6 +868,93 @@ def test_drift_trap_markers_win_after_three_consistent_fits():
     assert [o[1] for o in out] == ["tracking", "markers"] and out[1][2] is True, [o[1:] for o in out]
 
 
+def test_hand_covering_marker_one_drops_only_it():
+    tc = _true_corners()
+    c = tc[1].mean(axis=0)
+    hand = (c + np.float32([[-10, -10], [10, -10], [10, 10], [-10, 10]])).astype(np.float32)  # over marker 1
+    kept, dropped = drop_occluded(tc, hand, _side(tc))
+    assert sorted(dropped) == [1] and sorted(kept) == [0, 2, 3], (sorted(kept), sorted(dropped))
+    far = np.float32([[300, 60], [420, 60], [420, 140], [300, 140]])  # above the screen, well clear of every marker
+    kept, dropped = drop_occluded(tc, far, _side(tc))
+    assert not dropped and sorted(kept) == [0, 1, 2, 3], (sorted(kept), sorted(dropped))
+    assert drop_occluded(tc, None, _side(tc))[1] == {}
+
+
+def _displaced(c, rng, px=15.0):
+    """Corners c with each one moved px camera px in its own random direction (uneven, as an occluder leaves them)."""
+    ang = rng.uniform(0, 2 * np.pi, len(c))
+    return (c + px * np.stack([np.cos(ang), np.sin(ang)], 1)).astype(np.float32)
+
+
+def test_marker_with_displaced_corners_excluded_by_guard():
+    # Not every case is caught: the 3-marker fit can absorb an uneven 15 px displacement (reprojection < 6 px) and
+    # then its screen corners are off by tens of points. A uniform shift of a whole marker is absorbed the same way.
+    # So this checks the rate: most cases excluded and then exact, and the misses are counted and printed.
+    tc = _true_corners()
+    scr = np.float32([[0, 0], [OW, 0], [OW, OH], [0, OH]])
+    cam = apply(OG, scr)  # true camera positions of the screen corners
+    total = caught = 0
+    for seed in range(50):
+        for bad in (0, 1, 2):
+            rng = np.random.default_rng(seed)
+            seen = {i: tc[i] for i in (0, 1, 2)}
+            seen[bad] = _displaced(tc[bad], rng)
+            M, used = fit_markers(seen, OTARGETS, OW, OH)
+            total += 1
+            if M is not None and sorted(used) == sorted({0, 1, 2} - {bad}):
+                caught += 1
+                err = np.abs(apply(M, cam) - scr).max()
+                assert err < 5, f"seed {seed} bad {bad}: excluded, yet screen corners off by {err:.2f} pt"
+    print(f"  displaced-corner occlusion, 3 markers: guard excluded the bad marker in {caught} of {total}")
+    assert caught >= 0.95 * total, f"only {caught} of {total} excluded"
+    # two markers, one displaced: no refit possible, so the marker M is rejected and the tracker M is used
+    M_track = np.linalg.inv(OG)
+    bad2 = {0: tc[0], 2: _displaced(tc[2], np.random.default_rng(0))}
+    M, source, _ = choose_overlay_M(bad2, OTARGETS, M_track, OW, OH, OCAM[0])
+    assert source == "tracking" and np.array_equal(M, M_track), source
+
+
+def _jump_corners(dx=80):
+    """Markers as seen after the screen moved dx camera px in one frame, and the M that matches them."""
+    G_jump = np.float64([[1, 0, dx], [0, 1, 0], [0, 0, 1]]) @ OG
+    return {i: c for i, c in _true_corners(G_jump).items() if i in (0, 2)}, np.linalg.inv(G_jump)
+
+
+def test_one_frame_jump_with_two_markers_keeps_tracker():
+    corners, M_jump = _jump_corners()
+    M_prev = np.linalg.inv(OG)  # tracker agrees with the previous M, the marker pair does not
+    M, source, reset = choose_overlay_M(corners, OTARGETS, M_prev, OW, OH, OCAM[0], {}, M_prev)
+    assert source == "tracking" and not reset and np.array_equal(M, M_prev), source
+    # if the tracker moved with the markers, the change is real (not a jump the tracker disagrees with): markers win
+    M, source, reset = choose_overlay_M(corners, OTARGETS, M_jump, OW, OH, OCAM[0], {}, M_prev)
+    assert source == "markers" and reset and np.allclose(M, M_jump, rtol=1e-4, atol=1e-6), source
+
+
+def test_persistent_jump_markers_win_after_drift_frames():
+    corners, M_jump = _jump_corners()
+    M_prev, drift = np.linalg.inv(OG), {}
+    out = [choose_overlay_M(corners, OTARGETS, M_prev, OW, OH, OCAM[0], drift, M_prev) for _ in range(3)]
+    assert [o[1] for o in out] == ["tracking", "tracking", "markers"] and out[2][2] is True, [o[1:] for o in out]
+    assert np.abs(screen_quad(out[2][0], OW, OH) - screen_quad(M_jump, OW, OH)).max() < 1.0
+
+
+def test_live_frames_no_hand_all_four_used():
+    # the full overlay path (overlay_fix, as run() calls it) on the real frames with no hand: all 4 markers used
+    import glob
+    import json
+    import os
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata")
+    t = {int(k): np.float32(v) for k, v in json.load(open(os.path.join(here, "live_targets.json"))).items()}
+    frames = sorted(glob.glob(os.path.join(here, "live_*.jpg")))
+    assert frames, "testdata/live_*.jpg missing"
+    for f in frames:
+        g = cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2GRAY)
+        seen = {i: c for i, c in detect_marker_corners(g).items() if i < 4}
+        M, source, reset, used, redetected, dropped = overlay_fix(g, seen, t, None, None, None, OW, OH, {}, None)
+        assert source == "markers" and sorted(used) == [0, 1, 2, 3] and not dropped, \
+            f"{os.path.basename(f)}: source {source}, used {sorted(used)}, dropped {sorted(dropped)}"
+
+
 def test_tracking_only_for_9s_gives_no_source():
     M = np.eye(3)
     assert tracking_age_guard(M, "tracking", now=9.0, last_marker=0.0) == (None, None)
@@ -1091,6 +1183,9 @@ if __name__ == "__main__":
               test_touch_point_settle_and_window, test_two_samples_click_and_no_samples_do_not,
               test_keyboard_samples_off_screen_rejected, test_live_moving_taps_click_at_contact_point,
               test_tracking_only_for_9s_gives_no_source, test_drift_trap_markers_win_after_three_consistent_fits,
+              test_hand_covering_marker_one_drops_only_it, test_marker_with_displaced_corners_excluded_by_guard,
+              test_one_frame_jump_with_two_markers_keeps_tracker, test_persistent_jump_markers_win_after_drift_frames,
+              test_live_frames_no_hand_all_four_used,
               test_gesture_tap_then_withdrawal_is_one_click,
               test_touch_fuser_reports_accepted_downs,
               test_tap_features_window_and_components, test_drain_keeps_valid_feature_fields,

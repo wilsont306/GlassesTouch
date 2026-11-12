@@ -65,6 +65,8 @@ GUIDE_MATCH = 1.0     # guided re-detection counts only if its centre is within 
 DRIFT_FRAMES = 3         # 2-marker fits that disagree with the tracker and agree with each other: markers win
 TRACK_ONLY_MAX = 8.0         # seconds without a marker fix before a tracker-only M is not trusted (it may have drifted)
 TRUST_FRAC = 0.04     # 2-marker M vs tracker M: disagreement above this fraction of the frame width keeps the tracker's M
+REPROJ_PX = 6.0      # 2-3 marker fit: a marker whose corners sit this far (mean, camera px) from the fitted M is an outlier
+JUMP_FRAC = 0.08     # marker M moving the screen quad this far (fraction of frame width) in a frame with <4 markers is suspect
 PAIR_SIDES = ({0, 1}, {2, 3}, {0, 3}, {1, 2})  # marker pairs on one side of the screen (top, bottom, left, right)
 CORNER_NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"]  # ids 0..3
 HOLD_SECONDS = 0.5   # keep last homography this long after markers are lost
@@ -144,6 +146,60 @@ def homography_from_corners(corners_by_id, targets):
         return None  # too few inliers, or a degenerate (near-collinear) fit
     M = np.linalg.inv(G)
     return M if np.isfinite(M).all() else None
+
+
+def reproj_errors(corners_by_id, targets, M):
+    """{id: mean corner distance (camera px)} between each marker's seen corners and where M puts its screen quad."""
+    G = np.linalg.inv(M)
+    return {i: float(np.linalg.norm(cv2.perspectiveTransform(np.float32([targets[i]]), G)[0] - c, axis=1).mean())
+            for i, c in corners_by_id.items()}
+
+
+def fit_markers(corners, targets, W, H):
+    """Marker homography from the seen overlay markers, with a consistency guard for 2-3 of them: the worst marker
+    more than REPROJ_PX off the fit is dropped and the fit redone; a 2-marker fit that is off is rejected.
+    Returns (M or None, ids used)."""
+    ids = [i for i in targets if i in corners]
+    while True:
+        sub = {i: corners[i] for i in ids}
+        M = homography_from_corners(sub, targets) if len(ids) >= 2 else None
+        if M is None or screen_quad(M, W, H) is None:
+            return None, ids
+        if len(ids) > 3:  # 4 markers: RANSAC over all corners is the check
+            return M, ids
+        err = reproj_errors(sub, targets, M)
+        worst = max(err, key=err.get)
+        if err[worst] <= REPROJ_PX:
+            return M, ids
+        if len(ids) == 2:
+            return None, ids
+        ids.remove(worst)
+
+
+def _grow(pts, r):
+    """Convex hull of pts (N, 2) grown by r px: the hull of disc samples around every point."""
+    ang = np.linspace(0, 2 * np.pi, 12, endpoint=False)
+    grown = (pts[:, None, :] + r * np.stack([np.cos(ang), np.sin(ang)], 1)[None]).reshape(-1, 2)
+    return cv2.convexHull(grown.astype(np.float32)).reshape(-1, 2)
+
+
+def drop_occluded(corners_by_id, hand_poly, pad):
+    """Split overlay markers by whether the hand covers them: (kept, dropped), each {id: (4, 2) corners}. A marker is
+    covered when its quad meets the previous hand polygon grown by pad camera px (about one marker side)."""
+    if hand_poly is None or not corners_by_id:
+        return dict(corners_by_id), {}
+    hand = _grow(np.float32(hand_poly), pad)
+    kept, dropped = {}, {}
+    for i, c in corners_by_id.items():
+        area, _ = cv2.intersectConvexConvex(cv2.convexHull(np.float32(c)), hand)
+        (dropped if area > 0 else kept)[i] = c
+    return kept, dropped
+
+
+def _side(corners):
+    """Mean marker side (camera px) over the corners given; 0 for none."""
+    return float(np.mean([np.linalg.norm(c - np.roll(c, -1, axis=0), axis=1).mean() for c in corners.values()])) \
+        if corners else 0.0
 
 
 def _poly(pts, shape):
@@ -247,19 +303,39 @@ def refine_overlay_corners(gray, corners, targets, M_guess):
     return {**corners, **extra}, sorted(extra)
 
 
-def choose_overlay_M(corners, targets, M_track, W, H, frame_w, drift=None):
+def overlay_fix(gray, corners, targets, M_track, held, hand_poly, W, H, drift, prev_M):
+    """One frame of the overlay path: drop markers the hand covers, guided re-detection of the missing ones, drop
+    the covered ones again (a re-detection can be damaged too), then the trust rules. Returns
+    (M, source, reset, corners, redetected, dropped): corners are the markers used, dropped is {id: corners} ignored."""
+    corners, dropped = drop_occluded(corners, hand_poly, _side(corners))
+    corners, redetected = refine_overlay_corners(gray, corners, targets, overlay_guess(corners, targets, M_track, held))
+    corners, late = drop_occluded(corners, hand_poly, _side(corners))
+    dropped = {**dropped, **late}
+    redetected = [i for i in redetected if i in corners]
+    M, source, reset = choose_overlay_M(corners, targets, M_track, W, H, gray.shape[1], drift, prev_M)
+    return M, source, reset, corners, redetected, dropped
+
+
+def choose_overlay_M(corners, targets, M_track, W, H, frame_w, drift=None, prev_M=None):
     """Trust rules for the overlay homography from the markers seen (corners: {id: (4, 2)}, direct or re-detected).
     M_track: the ScreenTracker's current M, or None. Returns (M, source, reset): source is 'markers', 'tracking'
     or None; reset says whether the tracker should restart from M. drift: a dict the caller keeps across frames,
-    for the drift guard (see _drift_vote); None disables it."""
-    seen = [i for i in targets if i in corners]
-    M_pair = homography_from_corners(corners, targets) if len(seen) >= 2 else None
-    if M_pair is not None and screen_quad(M_pair, W, H) is None:
-        M_pair = None  # singular fit counts as a failure
+    for the drift guard (see _drift_vote); None disables it. prev_M: last frame's M, for the one-frame jump rule."""
+    M_pair, seen = fit_markers(corners, targets, W, H)
     if M_pair is None:
         if drift is not None:
             drift.clear()
         return (M_track, "tracking", False) if M_track is not None else (None, None, False)
+    if prev_M is not None and M_track is not None and len(seen) < 4:
+        # a marker fit that jumps the screen while the tracker holds still is suspect: keep the tracker this frame,
+        # and let _drift_vote count it so a persistent change still wins after DRIFT_FRAMES
+        qa, qp, qt = screen_quad(M_pair, W, H), screen_quad(prev_M, W, H), screen_quad(M_track, W, H)
+        if qp is not None and qt is not None and np.linalg.norm(qa - qp, axis=1).mean() > JUMP_FRAC * frame_w \
+                and np.linalg.norm(qt - qp, axis=1).mean() <= TRUST_FRAC * frame_w:
+            if drift is not None and _drift_vote(drift, qa, False, frame_w):
+                drift.clear()
+                return M_pair, "markers", True
+            return M_track, "tracking", False
     if len(seen) >= 3:
         if drift is not None:
             drift.clear()
@@ -494,14 +570,18 @@ def make_hand_landmarker():
     return HandLandmarker.create_from_options(opts)
 
 
-def draw_debug(frame, centres, lm, pinched, status, redetected=(), m_source=None):
-    """Markers in green (decoded directly) or yellow (guided re-detection); line 2 says which ids were used
-    and whether M came from the markers or from tracking."""
+def draw_debug(frame, centres, lm, pinched, status, redetected=(), m_source=None, dropped=None):
+    """Markers in green (decoded directly) or yellow (guided re-detection), grey when the hand covers them and
+    they are ignored (dropped: {id: centre}); line 2 says which ids were used and whether M came from the markers
+    or from tracking."""
     h, w = frame.shape[:2]
     for i, (cx, cy) in centres.items():
         col = (0, 255, 255) if i in redetected else (0, 255, 0)
         cv2.circle(frame, (int(cx), int(cy)), 8, col, -1)
         cv2.putText(frame, str(i), (int(cx) + 10, int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
+    for i, (cx, cy) in (dropped or {}).items():
+        cv2.circle(frame, (int(cx), int(cy)), 8, (160, 160, 160), -1)
+        cv2.putText(frame, f"{i} hand", (int(cx) + 10, int(cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 2)
     if lm:
         for p in lm:
             cv2.circle(frame, (int(p.x * w), int(p.y * h)), 3, (255, 0, 0), -1)
@@ -510,6 +590,9 @@ def draw_debug(frame, centres, lm, pinched, status, redetected=(), m_source=None
     direct = sorted(i for i in centres if i not in redetected)
     cv2.putText(frame, f"ids direct {direct} re-detected {sorted(redetected)} M from {m_source or 'none'}",
                 (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    if dropped:
+        cv2.putText(frame, f"ignored, covered by hand: {sorted(dropped)}", (10, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 2)
 
 
 class FrameHub:
@@ -711,10 +794,7 @@ def overlay_regions(targets):
 
 def hand_exclusion(lm, w, h, r=20):
     """Camera-pixel polygon around the hand: its landmarks grown by r px (convex hull of disc samples)."""
-    pts = np.float32([(p.x * w, p.y * h) for p in lm])
-    ang = np.linspace(0, 2 * np.pi, 12, endpoint=False)
-    grown = (pts[:, None, :] + r * np.stack([np.cos(ang), np.sin(ang)], 1)[None]).reshape(-1, 2)
-    return cv2.convexHull(grown.astype(np.float32)).reshape(-1, 2)
+    return _grow(np.float32([(p.x * w, p.y * h) for p in lm]), r)
 
 
 def pointing_hand(hands, w, h, ref, on_screen=None):
@@ -1221,7 +1301,7 @@ def run(args):
             prev_now = now
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             corners = detect_marker_corners(gray)
-            redetected = []
+            redetected, dropped_centres = [], {}
             if targets is None:
                 centres = {i: c.mean(axis=0) for i, c in corners.items()}
                 M_new = homography_from_markers(centres, W, H)
@@ -1236,13 +1316,13 @@ def run(args):
                         M, last_ok, source = M_t, now, "tracking"
                     else:
                         source = None
-            else:  # overlay: guided re-detection of missed markers, then the trust rules choose M
+            else:  # overlay: drop hand-covered markers, guided re-detection, then the trust rules choose M
                 M_track = tracker.update(gray, hand_poly)
                 held = M if M is not None and now - last_ok <= HOLD_SECONDS else None
-                corners, redetected = refine_overlay_corners(
-                    gray, corners, targets, overlay_guess(corners, targets, M_track, held))
+                M_new, source, reset, corners, redetected, dropped = overlay_fix(
+                    gray, corners, targets, M_track, held, hand_poly, W, H, drift, M)
                 centres = {i: c.mean(axis=0) for i, c in corners.items()}
-                M_new, source, reset = choose_overlay_M(corners, targets, M_track, W, H, gray.shape[1], drift)
+                dropped_centres = {i: c.mean(axis=0) for i, c in dropped.items()}
                 if reset:
                     last_marker, stale_logged = now, False
                 M_g, source_g = tracking_age_guard(M_new, source, now, last_marker)
@@ -1342,7 +1422,7 @@ def run(args):
             if touch_flash is not None and time.monotonic() < touch_flash[1] and m_valid:
                 cx, cy = raw_map(np.linalg.inv(M), touch_flash[0])  # screen point back into the camera image
                 cv2.circle(frame, (int(cx), int(cy)), 14, (255, 0, 255), 3)
-            draw_debug(frame, centres, lm, pinch.down, status, redetected, source)
+            draw_debug(frame, centres, lm, pinch.down, status, redetected, source, dropped_centres)
             if view is not None:
                 view.hub.put(frame)
             if not args.no_window:

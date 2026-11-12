@@ -19,3 +19,5 @@
 - install_helper.sh runs whatever is in the repo as root at the moment you run it: only run it on code you trust.
 - ArUco at ~32 px: the default perspectiveRemoveIgnoredMarginPerCell (0.13) misreads thin-celled ids (0, 2) under blur. Keep 0.3 / 8 px per cell (tracker.make_marker_detector). Synthetic blur tests did not reproduce this; only real frames did.
 - The panel's tracker view (127.0.0.1:8767, MJPEG) shows the camera image, including your screen. It's local-only with a Host check: other web pages can embed but not read it, but any local process on this account can.
+- The glasses' capture button can't be read with DAT 0.5.0 and doesn't interrupt the stream (Inputs exist only in DAT 1.0, experimental, which needs a paid Apple account for streaming).
+- A 3-marker homography can absorb one partly-occluded marker's uniform corner shift without a visible reprojection error; that's why covered markers are dropped by hand position instead of by geometry checks.
