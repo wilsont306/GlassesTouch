@@ -14,7 +14,7 @@ from tracker import (ARUCO_DICT, GESTURE_MAX, SCROLL_GAIN, TOUCH_SETTLE, TRUST_F
                      capture_time, choose_overlay_M, format_decision, tracking_age_guard,
                      detect_marker_corners, detect_markers, drain_taps, guided_redetect, homography_from_corners,
                      homography_from_markers, hover_moves_cursor, map_point, marker_extent, marker_png, open_touch_socket,
-                     parse_args, screen_point, screen_quad)
+                     parse_args, pose_is_two, screen_point, screen_quad)
 
 
 def test_screen_point_edge_tolerance():
@@ -1001,6 +1001,17 @@ def test_two_finger_pose():
     assert two_finger(z(point)) is False and two_finger(z(spread)) is False
 
 
+def test_two_finger_rule_on_live_poses():
+    # per-second pose samples logged live (ext index/middle/ring/pinky, index-middle gap)
+    two = [(1.61, 1.72, 1.41, 1.40, 0.18), (1.58, 1.62, 1.15, 1.13, 0.21), (1.64, 1.76, 1.31, 1.36, 0.14),
+           (1.49, 1.68, 1.51, 1.56, 0.23), (1.50, 1.56, 1.41, 1.45, 0.23), (1.73, 1.95, 1.29, 1.35, 0.18)]
+    point = [(1.72, 1.03, 0.87, 0.93, 0.91), (1.63, 1.41, 1.16, 1.32, 0.50), (1.52, 1.16, 1.05, 1.18, 0.58),
+             (1.61, 1.26, 1.18, 1.34, 0.64), (1.43, 1.19, 1.12, 1.28, 0.47), (1.67, 1.12, 1.10, 1.30, 0.86)]
+    assert all(pose_is_two(r[:4], r[4]) for r in two)
+    assert not any(pose_is_two(r[:4], r[4]) for r in point)
+    assert not pose_is_two((1.8, 1.85, 1.8, 1.75), 0.3)  # an open hand: ring and pinky as straight as the middle
+
+
 def test_touch_fuser_reports_accepted_downs():
     fu = TouchFuser()
     _still_finger(fu, 500, 300, 0.0, 2.0)
@@ -1201,7 +1212,7 @@ if __name__ == "__main__":
               test_ringing_gives_one_event_and_one_click, test_malformed_datagrams_ignored,
               test_drain_at_most_64_per_frame, test_bind_failure_names_port_and_imu_taps,
               test_capture_time_shift, test_hover_moves_cursor_only_without_touch, test_screen_point_edge_tolerance,
-              test_touch_decisions_per_reason, test_two_finger_pose,
+              test_touch_decisions_per_reason, test_two_finger_pose, test_two_finger_rule_on_live_poses,
               test_touch_point_settle_and_window, test_two_samples_click_and_no_samples_do_not,
               test_keyboard_samples_off_screen_rejected, test_live_moving_taps_click_at_contact_point,
               test_tracking_only_for_9s_gives_no_source, test_drift_trap_markers_win_after_three_consistent_fits,

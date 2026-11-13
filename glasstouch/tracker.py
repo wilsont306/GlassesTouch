@@ -482,13 +482,22 @@ def two_finger(pts):
     """True if index and middle fingers point together: both extended, ring and pinky folded, index and middle
     tips within 0.6 hand sizes of each other. pts: 21 landmarks, (x, y) or (x, y, z). run() passes MediaPipe's 3D
     world landmarks: 2D pixel distances misread a one-finger point as two fingers when the glasses look down."""
-    ext, gap = finger_extension(pts)
+    return pose_is_two(*finger_extension(pts))
+
+
+def pose_is_two(ext, gap):
+    """The two-finger decision from finger_extension()'s (ext, gap)."""
     # live: in 3D, "tip closer to the wrist than the PIP" demanded fully curled ring/pinky and never fired for a
     # relaxed two-finger pose; extension ratios allow half-bent ring and pinky
-    return bool(ext[0] > TWO_EXT and ext[1] > TWO_EXT and ext[2] < TWO_FOLD and ext[3] < TWO_FOLD and gap < 0.6)
+    fold = max(ext[2], ext[3])  # ring and pinky: below the middle finger, never as straight as it
+    return bool(ext[0] > TWO_INDEX and ext[1] > TWO_MIDDLE and gap < TWO_GAP
+                and fold < TWO_FOLD and fold < ext[1] - TWO_MARGIN)
 
 
-TWO_EXT, TWO_FOLD = 1.6, 1.5  # wrist-to-tip / wrist-to-knuckle: straight finger ~1.9-2.1, curled ~1.0-1.3
+# fitted to a live session (wrist-to-tip / wrist-to-knuckle; gap in hand sizes): pointing = middle 1.0-1.4,
+# gap 0.5-0.9; two fingers = index 1.45-1.75, middle 1.45-1.95, ring/pinky 1.15-1.55, gap 0.14-0.32.
+# This rule: 22/22 two-finger and 0/41 pointing seconds
+TWO_INDEX, TWO_MIDDLE, TWO_GAP, TWO_FOLD, TWO_MARGIN = 1.35, 1.45, 0.4, 1.6, 0.08
 
 
 def finger_extension(pts):
