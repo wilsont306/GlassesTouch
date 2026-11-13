@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlassesTouch calibration</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 18px -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #intro { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 12px; padding: 16px; }
+  button { font: inherit; padding: 10px 22px; border-radius: 8px; border: 0; background: #3478f6; color: #fff; cursor: pointer; }
+  #dot { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%; background: #ff3b30;
+         box-shadow: 0 0 0 6px rgba(255,59,48,.35); display: none; }
+  #label { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; color: #aaa; }
+  #count { font-size: 64px; color: #fff; }
+</style>
+</head>
+<body>
+<div id="intro">
+  <div><b>Edge calibration</b></div>
+  <div>Enter full screen first (View → Enter Full Screen, or Ctrl+Cmd+F), with the tracker running.<br>
+  A red dot appears near each edge and corner for 6 seconds: tap it with your index finger 3 times, lifting between taps.</div>
+  <div><button id="go" type="button">Start</button></div>
+</div>
+<div id="dot" aria-hidden="true"></div>
+<div id="label" aria-live="polite"></div>
+<script>
+// Dot positions in screen points (the page is full screen, so CSS px = points). Clear of the 140 pt corner markers.
+const W = screen.width, H = screen.height, E = 30, C = 200;
+const dots = [
+  ["top middle", W / 2, E], ["bottom middle (Dock)", W / 2, H - E], ["left middle", E, H / 2], ["right middle", W - E, H / 2],
+  ["top, near left corner", C, E], ["top, near right corner", W - C, E],
+  ["bottom, near left corner", C, H - E], ["bottom, near right corner", W - C, H - E],
+  ["left, near top corner", E, C], ["right, near bottom corner", W - E, H - C], ["centre", W / 2, H / 2],
+];
+const dot = document.getElementById("dot"), label = document.getElementById("label");
+document.getElementById("go").onclick = () => {
+  document.getElementById("intro").style.display = "none";
+  let i = 0;
+  const show = () => {
+    if (i >= dots.length) { dot.style.display = "none"; label.innerHTML = "Done. Tell Claude \"done\"."; return; }
+    const [name, x, y] = dots[i];
+    dot.style.left = x + "px"; dot.style.top = y + "px"; dot.style.display = "block";
+    let s = 6;
+    const tick = () => {
+      label.innerHTML = `<div id="count">${s}</div>Dot ${i + 1} of ${dots.length}: ${name}`;
+      if (s-- > 0) setTimeout(tick, 1000); else { i++; setTimeout(show, 1500); }
+    };
+    tick();
+  };
+  setTimeout(show, 1500);
+};
+</script>
+</body>
+</html>

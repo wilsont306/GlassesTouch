@@ -723,10 +723,15 @@ def overlay_child(size):
     for i, (x, y) in corners.items():
         png = marker_png(i)
         image = AppKit.NSImage.alloc().initWithData_(AppKit.NSData.dataWithBytes_length_(png, len(png)))
-        win = AppKit.NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            AppKit.NSMakeRect(x, y, size, size), AppKit.NSWindowStyleMaskBorderless,
+        # a non-activating panel at screen-saver level: live, plain NSWindows vanished behind other apps'
+        # full-screen spaces; panels may join them (FullScreenAuxiliary) and don't hide when we're inactive
+        win = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            AppKit.NSMakeRect(x, y, size, size),
+            AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered, False)
-        win.setLevel_(AppKit.NSStatusWindowLevel + 1)
+        win.setFloatingPanel_(True)
+        win.setHidesOnDeactivate_(False)
+        win.setLevel_(AppKit.NSScreenSaverWindowLevel)
         win.setIgnoresMouseEvents_(True)
         win.setOpaque_(True)
         win.setBackgroundColor_(AppKit.NSColor.whiteColor())
@@ -1250,7 +1255,9 @@ def raw_map(M, pt):
     return cv2.perspectiveTransform(np.float32([[pt]]), M)[0, 0]
 
 
-EDGE_TOL = 60  # screen points: from the glasses the fingertip shows a little past the contact point at edges
+EDGE_TOL = 90  # screen points: edge taps land up to ~70 pt outside (calibration: left edge -38..-68)
+TIP_DY = -32.0  # screen points: calibration (11 dots, 2026-11-12) found the fingertip mapped ~32 pt below
+                # the touch; the remaining 20-50 pt is per-tap scatter, so only this shift is corrected
 
 
 def screen_point(tip, W, H, tol=EDGE_TOL):
@@ -1420,6 +1427,7 @@ def run(args):
                     # only an M from markers or the tracker this frame counts; the HOLD_SECONDS hold is stale
                     fresh = source is not None
                     tip = raw_map(M, (lm[8].x * w, lm[8].y * h)) if fresh else (0.0, 0.0)
+                    tip = (tip[0], tip[1] + TIP_DY) if fresh else tip
                     on = fresh and screen_point(tip, W, H)[1]  # tip stays raw for the log; actions clamp it
                     world = res.hand_world_landmarks[k] if res.hand_world_landmarks else None
                     pose = [(p.x, p.y, p.z) for p in world] if world else [(p.x * w, p.y * h) for p in lm]
