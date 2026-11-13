@@ -1256,7 +1256,7 @@ def raw_map(M, pt):
 
 
 EDGE_TOL = 90  # screen points: edge taps land up to ~70 pt outside (calibration: left edge -38..-68)
-TIP_DY = -32.0  # screen points: calibration (11 dots, 2026-11-12) found the fingertip mapped ~32 pt below
+TIP_DY = 0.0  # screen points: a -32 shift from one calibration run (fingertip ~32 pt below the dot) felt "a lot worse" live; off
                 # the touch; the remaining 20-50 pt is per-tap scatter, so only this shift is corrected
 
 
