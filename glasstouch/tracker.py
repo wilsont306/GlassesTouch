@@ -482,12 +482,22 @@ def two_finger(pts):
     """True if index and middle fingers point together: both extended, ring and pinky folded, index and middle
     tips within 0.6 hand sizes of each other. pts: 21 landmarks, (x, y) or (x, y, z). run() passes MediaPipe's 3D
     world landmarks: 2D pixel distances misread a one-finger point as two fingers when the glasses look down."""
+    ext, gap = finger_extension(pts)
+    # live: in 3D, "tip closer to the wrist than the PIP" demanded fully curled ring/pinky and never fired for a
+    # relaxed two-finger pose; extension ratios allow half-bent ring and pinky
+    return bool(ext[0] > TWO_EXT and ext[1] > TWO_EXT and ext[2] < TWO_FOLD and ext[3] < TWO_FOLD and gap < 0.6)
+
+
+TWO_EXT, TWO_FOLD = 1.6, 1.5  # wrist-to-tip / wrist-to-knuckle: straight finger ~1.9-2.1, curled ~1.0-1.3
+
+
+def finger_extension(pts):
+    """Per finger (index, middle, ring, pinky): wrist-to-tip over wrist-to-knuckle (MCP) distance, plus the
+    index-middle tip gap in hand sizes (wrist to middle knuckle). pts: 21 landmarks, 2D or 3D."""
     def dist(a, b):
-        return np.linalg.norm(np.subtract(pts[a], pts[b]))
-    hand = dist(0, 9)
-    return bool(dist(0, 8) > dist(0, 6) and dist(0, 12) > dist(0, 10)
-                and dist(0, 16) < dist(0, 14) and dist(0, 20) < dist(0, 18)
-                and dist(8, 12) < 0.6 * hand)
+        return float(np.linalg.norm(np.subtract(pts[a], pts[b])))
+    ext = [dist(0, tip) / max(dist(0, mcp), 1e-9) for mcp, tip in ((5, 8), (9, 12), (13, 16), (17, 20))]
+    return ext, dist(8, 12) / max(dist(0, 9), 1e-9)
 
 
 class PinchDetector:
@@ -1296,7 +1306,7 @@ def run(args):
             touch_sock = open_touch_socket(args.touch_port)
         last_frame_wall = time.monotonic()  # wall clock of the last camera frame (stall detection)
         last_marker, stale_logged, drift = time.monotonic(), False, {}  # last marker reset; drift guard state
-        stats = {"t": time.monotonic(), "frames": 0, "hand": 0, "markers": 0, "tracking": 0, "none": 0,
+        stats = {"t": time.monotonic(), "frames": 0, "hand": 0, "markers": 0, "tracking": 0, "none": 0, "two": 0,
                  "wait": 0.0, "proc": 0.0}
         prev_now = None
         while True:
@@ -1373,12 +1383,20 @@ def run(args):
                 stats["frames"] += 1
                 stats["hand"] += lm is not None
                 stats[source or "none"] += 1
+                if lm is not None and res.hand_world_landmarks:  # the pointing hand's pose, to tune two_finger
+                    pw = [(p.x, p.y, p.z) for p in res.hand_world_landmarks[k]]
+                    stats["pose"] = finger_extension(pw)
+                    stats["two"] += two_finger(pw)
                 if now - stats["t"] >= 1.0:
                     n = max(stats["frames"], 1)
+                    pose = stats.get("pose")
+                    pose = (" ext=" + "/".join(f"{e:.2f}" for e in pose[0]) + f" gap={pose[1]:.2f}") if pose else ""
                     debug_log(f"stats fps={stats['frames'] / (now - stats['t']):.1f} hand={stats['hand']}/{n} "
                               f"M markers={stats['markers']} tracking={stats['tracking']} none={stats['none']} "
-                              f"proc={1000 * stats['proc'] / n:.0f}ms wait={1000 * stats['wait'] / n:.0f}ms")
-                    stats.update(t=now, frames=0, hand=0, markers=0, tracking=0, none=0, wait=0.0, proc=0.0)
+                              f"proc={1000 * stats['proc'] / n:.0f}ms wait={1000 * stats['wait'] / n:.0f}ms "
+                              f"two={stats['two']}/{n}{pose}")
+                    stats.update(t=now, frames=0, hand=0, markers=0, tracking=0, none=0, wait=0.0, proc=0.0, two=0,
+                                 pose=None)
             hand_poly = hand_exclusion(lm, w, h) if lm is not None else None
             status, ev = ("no hand" if lm is None else "tracking"), None
             if args.touch:

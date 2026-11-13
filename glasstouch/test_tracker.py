@@ -981,23 +981,24 @@ def test_tracking_only_for_9s_gives_no_source():
 
 
 def test_two_finger_pose():
-    def pose(index, middle, ring, pinky):  # each finger: (extended?, tip_x offset); wrist at origin
+    # wrist at the origin, knuckles (MCPs) 9 up: hand size 9. Each finger: (tip height, tip x); a straight finger's
+    # tip is ~18 up (extension 2.0), a curled one ~10 (1.1), a relaxed half-bent one ~12.5 (1.4)
+    def pose(index, middle, ring, pinky):
         pts = [(0.0, 0.0)] * 21
-        pts[9] = (0.0, -10.0)  # middle MCP: hand size 10
-        for k, (pip, tip), (ext, x) in zip((6, 10, 14, 18), ((6, 8), (10, 12), (14, 16), (18, 20)),
-                                           (index, middle, ring, pinky)):
-            pts[pip] = (x, -6.0)
-            pts[tip] = (x, -14.0 if ext else -3.0)
+        for mcp, pip, tip, (h, x) in zip((5, 9, 13, 17), (6, 10, 14, 18), (8, 12, 16, 20), (index, middle, ring, pinky)):
+            pts[mcp], pts[pip], pts[tip] = (x, -9.0), (x, -12.0), (x, -h)
         return pts
-    two = pose((True, -1.5), (True, 1.5), (False, 0.5), (False, 0.5))  # index and middle up, close together
-    point = pose((True, -1.5), (False, 1.5), (False, 0.5), (False, 0.5))  # pointing: middle folded
-    open_hand = pose((True, -3.0), (True, 0.0), (True, 3.0), (True, 4.5))  # all four extended
-    spread = pose((True, -4.0), (True, 4.0), (False, 0.5), (False, 0.5))  # V sign, tips 8 apart (> 0.6 * 10)
-    assert two_finger(two) is True
+    two = pose((18, -1.0), (18, 1.0), (10, 2.0), (10, 3.0))  # index and middle up, close together
+    relaxed = pose((18, -1.0), (17.5, 1.0), (12.5, 2.0), (12.5, 3.0))  # ring and pinky only half bent (live case)
+    point = pose((18, -1.0), (10, 1.0), (10, 2.0), (10, 3.0))  # pointing: middle curled
+    open_hand = pose((18, -2.0), (18, 0.0), (17, 2.0), (16, 4.0))  # all four extended
+    spread = pose((18, -4.0), (18, 4.0), (10, 2.0), (10, 3.0))  # V sign, tips 8 apart (> 0.6 * 9)
+    assert two_finger(two) is True and two_finger(relaxed) is True
     assert two_finger(point) is False and two_finger(open_hand) is False and two_finger(spread) is False
     # 3D world landmarks (what run() passes): same poses with a z coordinate
-    z = lambda pts: [(x, y, 0.3 * i) for i, (x, y) in enumerate(pts)]
-    assert two_finger(z(two)) is True and two_finger(z(point)) is False and two_finger(z(spread)) is False
+    z = lambda pts: [(x, y, 0.2 * i) for i, (x, y) in enumerate(pts)]
+    assert two_finger(z(two)) is True and two_finger(z(relaxed)) is True
+    assert two_finger(z(point)) is False and two_finger(z(spread)) is False
 
 
 def test_touch_fuser_reports_accepted_downs():
