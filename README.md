@@ -40,3 +40,7 @@ Needs Xcode 26.4+, an iPhone on iOS 17.2+, and Developer Mode turned on in the M
 ## Stopping
 
 Fold the glasses' arms (or take them off and fold them): the stream stops and the tracker stops itself within about 3 s, releasing the mouse. The panel's Stop button does the same. The capture button on the glasses does nothing during a stream. To start again: Start Session → Preview in the phone app, then Start in the panel.
+
+## License
+
+MIT for GlassesTouch's own code (see `LICENSE`). `GlassesCam/` and `GlassesCamBT/` are built on Meta's Wearables Device Access Toolkit sample app and stay under Meta's terms (the `LICENSE` file in each folder).
