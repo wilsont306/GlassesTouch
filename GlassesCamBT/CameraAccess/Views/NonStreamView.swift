@@ -9,7 +9,7 @@
 //
 // NonStreamView.swift
 //
-// Default screen to show getting started tips after app connection
+// Default screen showing glasses, Mac and Wi-Fi status before streaming.
 // Initiates streaming
 //
 
@@ -19,65 +19,84 @@ import SwiftUI
 struct NonStreamView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var wearablesVM: WearablesViewModel
+  @ObservedObject private var pairing = PairingModel.shared
   @State private var sheetHeight: CGFloat = 300
+  @State private var showPhoneCamera = false
 
   var body: some View {
     ZStack {
-      Color.black.edgesIgnoringSafeArea(.all)
+      Color.gtBg.edgesIgnoringSafeArea(.all)
 
-      VStack {
+      VStack(alignment: .leading, spacing: 20) {
         HStack {
+          Wordmark()
           Spacer()
           Menu {
             Button("Disconnect", role: .destructive) {
               wearablesVM.disconnectGlasses()
             }
             .disabled(wearablesVM.registrationState != .registered)
+            if isLinked {
+              Button("Forget Mac") {
+                pairing.forget()
+              }
+            }
           } label: {
             Image(systemName: "gearshape")
-              .resizable()
-              .aspectRatio(contentMode: .fit)
-              .foregroundColor(.white)
-              .frame(width: 24, height: 24)
+              .font(.system(size: 20))
+              .foregroundStyle(Color.gtText)
+              .frame(width: 44, height: 44)
           }
         }
 
-        Spacer()
-
-        VStack(spacing: 12) {
-          Image(.cameraAccessIcon)
-            .resizable()
-            .renderingMode(.template)
-            .foregroundColor(.white)
-            .aspectRatio(contentMode: .fit)
-            .frame(width: 120)
-
-          Text("Stream Your Glasses Camera")
-            .font(.system(size: 20, weight: .semibold))
-            .foregroundColor(.white)
-
-          Text("Tap the Start streaming button to stream video from your glasses or use the camera button to take a photo from your glasses.")
-            .font(.system(size: 15))
-            .multilineTextAlignment(.center)
-            .foregroundColor(.white)
+        VStack(alignment: .leading, spacing: 16) {
+          StatusRow(
+            icon: "eyeglasses",
+            title: "Glasses",
+            value: viewModel.hasActiveDevice ? "Connected" : "Waiting",
+            tint: viewModel.hasActiveDevice ? Color.gtLive : Color.gtAccent)
+          StatusRow(
+            icon: "desktopcomputer",
+            title: "Mac",
+            value: macStatus.value,
+            tint: macStatus.tint)
+          StatusRow(
+            icon: "wifi",
+            title: "Wi-Fi",
+            tint: viewModel.streamURL == nil ? Color.gtMuted : Color.gtLive)
+          {
+            if let streamURL = viewModel.streamURL {
+              AddressChip(address: streamURL)
+            } else {
+              Text("No Wi-Fi")
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(Color.gtMuted)
+            }
+          }
         }
-        .padding(.horizontal, 12)
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .gtCard()
 
-        Spacer()
-
-        HStack(spacing: 8) {
-          Image(systemName: "hourglass")
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-            .foregroundColor(.white.opacity(0.7))
-            .frame(width: 16, height: 16)
-
-          Text("Waiting for an active device")
+        if case .notLinked = pairing.state {
+          Text("On the Mac, open the GlassesTouch panel and press Pair phone, then scan the code with the Camera app.")
             .font(.system(size: 14))
-            .foregroundColor(.white.opacity(0.7))
+            .foregroundStyle(Color.gtMuted)
         }
-        .padding(.bottom, 12)
-        .opacity(viewModel.hasActiveDevice ? 0 : 1)
+        if case .failed(let message) = pairing.state {
+          Text(message)
+            .font(.system(size: 14))
+            .foregroundStyle(Color.gtError)
+        }
+
+        Spacer()
+
+        Button("Use this phone's camera instead") {
+          showPhoneCamera = true
+        }
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(Color.gtText)
+        .frame(maxWidth: .infinity)
 
         CustomButton(
           title: "Start streaming",
@@ -100,6 +119,27 @@ struct NonStreamView: View {
         GettingStartedSheetView(height: $sheetHeight)
       }
     }
+    .fullScreenCover(isPresented: $showPhoneCamera) {
+      PhoneCameraView()
+    }
+  }
+
+  private var isLinked: Bool {
+    if case .linked = pairing.state { return true }
+    return false
+  }
+
+  private var macStatus: (value: String, tint: Color) {
+    switch pairing.state {
+    case .linked(let mac):
+      return (mac, Color.gtLive)
+    case .linking:
+      return ("Linking…", Color.gtAccent)
+    case .failed:
+      return ("Failed", Color.gtError)
+    case .notLinked:
+      return ("Not linked", Color.gtMuted)
+    }
   }
 }
 
@@ -111,7 +151,7 @@ struct GettingStartedSheetView: View {
     VStack(spacing: 24) {
       Text("Getting started")
         .font(.system(size: 18, weight: .semibold))
-        .foregroundColor(.primary)
+        .foregroundStyle(Color.gtText)
 
       VStack(spacing: 12) {
         TipItemView(
@@ -138,6 +178,7 @@ struct GettingStartedSheetView: View {
       }
     }
     .padding(.all, 24)
+    .background(Color.gtSurface)
     .background(
       GeometryReader { geo -> Color in
         DispatchQueue.main.async {
@@ -158,7 +199,7 @@ struct TipItemView: View {
       Image(resource)
         .resizable()
         .renderingMode(.template)
-        .foregroundColor(.primary)
+        .foregroundStyle(Color.gtMuted)
         .aspectRatio(contentMode: .fit)
         .frame(width: 24)
         .padding(.leading, 4)
@@ -166,7 +207,7 @@ struct TipItemView: View {
 
       Text(text)
         .font(.system(size: 15))
-        .foregroundColor(.primary)
+        .foregroundStyle(Color.gtText)
         .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

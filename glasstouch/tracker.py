@@ -9,12 +9,14 @@ import math
 import os
 import signal
 import functools
+import http.client
 import select
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,7 +32,10 @@ from mediapipe.tasks.python import BaseOptions
 from mediapipe.tasks.python.vision import (HandLandmarker, HandLandmarkerOptions,
                                            RunningMode)
 
+import maccam
+
 HERE = os.path.dirname(os.path.abspath(__file__))
+HOST_APP = os.environ.get("GLASSTOUCH_APP", "Terminal")  # the app macOS gives permissions to (app.py sets it)
 MODEL_PATH = os.path.join(HERE, "models", "hand_landmarker.task")
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
@@ -75,7 +80,8 @@ TRACK_REDETECT = 100    # re-detect features when fewer than this survive
 TRACK_MIN_INLIERS = 25  # fewer tracked inliers than this counts as a tracking failure
 SMOOTH_ALPHA = 0.5
 TOUCH_PORT = 9787       # imu_taps.py sends tap datagrams here
-TOUCH_SETTLE = 0.25     # decide a tap this long after it (in capture time): its fingertip samples have arrived
+TOUCH_SETTLE = 0.13     # decide a tap this long after it (in capture time): its fingertip samples (up to
+                        # TOUCH_WINDOW[1] after it) have arrived; frames carry real capture times, so no extra margin
 TOUCH_WINDOW = (-0.12, 0.12)  # fingertip samples that decide a tap's point, seconds around the tap
 TOUCH_SPAN_MAX = 250.0        # samples in the window spanning more than this: a sweeping hand, not a tap
 TOUCH_TAP_AGE, TOUCH_SAMPLE_AGE = 2.0, 3.0  # drop undecided taps / old fingertip samples after this
@@ -83,10 +89,29 @@ TOUCH_MIN_GAP = 0.4           # accepted clicks at least this far apart (seconds
 TOUCH_DRAIN_MAX = 64          # tap datagrams read per camera frame
 GESTURE_DECIDE = 0.25        # a press or two-finger touch-down is decided this long (capture time) after it
 GESTURE_DOUBLE = 0.9         # (taps < 0.4 s apart are dropped as ringing) a touch-down this soon after the last click, and near it, is a press (double-click or drag)
-GESTURE_DOUBLE_DIST = 100.0  # points: how near the last click a press must land (live 2nd taps landed 50-80 pt off)
+GESTURE_DOUBLE_DIST = 150.0  # points: how near the last click a press must land (live 2nd taps landed 50-110 pt off)
 GESTURE_MOVE = 30.0          # points the fingertip must move from the touch point to start a drag or scroll
-GESTURE_LIFT_WINDOW = 0.35   # lift-off: average fingertip speed over this much capture time ...
-GESTURE_LIFT_SPEED = 12.0    # ... below this (points/s) means the finger has come to rest (slow drags stay above it)
+GESTURE_LIFTOFF = 0.2        # a press that moves this soon after the 2nd tap is the finger lifting off (live: it leaves
+                             # at 20-50 pt per frame at once; at 15 fps that crosses GESTURE_MOVE within ~0.2 s), so a
+                             # double-click; a drag rests on the glass first, then slides
+GESTURE_PRESS_WAIT = 0.6     # a still press waits this long for the slide before it is a double-click
+GESTURE_HOLD = 0.15          # a tap whose finger stays put this long (within GESTURE_MOVE) is held: sliding starts a drag
+                             # (user's choice, from 0.3 then 0.2; a slow lift-off can cross GESTURE_MOVE after ~0.2 s, see
+                             # above, so some may now read as drags: watch for "drag" right after plain taps)
+GESTURE_HOLD_WAIT = 1.5      # a held tap that hasn't slid by then is just its click
+GESTURE_DRAG_GO = 15.0       # ... and still moving away by this much the next frame: a slide, not a one-off jump of the
+                             # fingertip estimate (between a double-tap's taps it jumps 60-110 pt, then stays)
+GESTURE_DRAG_MOVE = 60.0     # points a press must slide to start a drag (live: a hovering hand wobbled 25-40 pt after
+                             # the 2nd tap and crossed GESTURE_MOVE)
+GESTURE_LIFT_GROW = 0.12     # lift-off: the hand looks this much bigger (wrist-to-knuckle, on the screen plane) than at the
+                             # start of the drag or scroll, for two frames: it came toward the eye, off the glass
+GESTURE_PAUSE_SPEED = 225.0  # a drag frame slower than this (points/s, ~15 pt per frame) is a pause ...
+GESTURE_RESUME = 25.0        # ... after which the finger must move this far (points) to say where it goes next:
+GESTURE_TURN = 45.0          # within this many degrees of the drag's direction it carries on; turned further it was the
+                             # pull-away after a drop (live: carrying on turned 1-18 deg, pull-aways 53-179, mostly >90)
+GESTURE_LIFT_WINDOW = 0.45   # backup for a lift the size can't show: a real stop, average speed over this much time ...
+GESTURE_LIFT_SPEED = 100.0   # ... below this (points/s). Was 0.15 s / 300 pt/s, which also dropped drags that only slowed
+                             # down (live, "releases too early when my hand doesn't even release")
 GESTURE_OFF = 0.6            # lift-off: off screen, hand lost or no frame for longer than this (bursty camera frames)
 GESTURE_MAX = 10.0           # hard cap on one drag or scroll, so a button is never held for long
 GESTURE_STALL = 0.5          # wall-clock seconds without a camera frame while a button is held: release it
@@ -94,6 +119,13 @@ GESTURE_SMOOTH = 0.6         # drag position: weight of the newest fingertip sam
 GESTURE_HIST = 3.0           # fingertip frames kept so a late-accepted touch-down can be replayed
 SCROLL_GAIN = 0.1            # finger points -> scroll units (about 10 pt per unit)
 SCROLL_DEADBAND = 3.0        # scrolling ignores finger motion below this many points (jitter)
+SCROLL_SIDEWAYS = 2.0        # a scroll is sideways only if its first stroke is this many times wider than tall (live: the
+                             # fingertip jumps 30-150 pt between frames, and "wider than tall" locked 16 of 21 scrolls sideways)
+SCROLL_LIFT_GROW = 0.5       # a scroll ends on hand size only past this growth (live: real lifts grow < 8 %; scrolls were
+                             # cut after 1-8 steps at 13-48 % growth, size noise as the hand sweeps the screen)
+MARKER_SHOW_AFTER = 0.5      # on-demand markers: seconds without a marker or content fix before they fade in
+MARKER_PROBE_EVERY = 0.5     # ... while shown, seconds between checks that content alone finds the screen
+MARKER_HIDE_AFTER = 6        # ... checks in a row (3 s) that do, before they fade out again
 VIEW_MAX_W = 540             # --view-port: frames are at most this wide ...
 VIEW_FPS = 15                # ... and at most this many a second (shared by all clients)
 TAP_FEATURES = {"gyro_peak": "g", "gyro_x": "gx", "gyro_y": "gy", "gyro_z": "gz", "acc_peak": "a",
@@ -102,6 +134,12 @@ TAP_MIN_ACC, TAP_MAX_ACC = 0.003, 0.08  # accel change (g) of a screen tap: belo
 TAP_MIN_ACC_SECOND = 0.002  # a tap 0.4-0.9 s after a click (the 2nd of a double-tap) lands lighter: live 0.002 g
 TAP_MAX_GYRO = 3.0    # rad/s: a bigger gyro peak is a knock on the case, not a tap on the screen
 TYPING_BELOW = 150.0  # points: a second hand whose index tip is this far under the screen is over the keyboard
+TYPING_MOVE = 8.0     # camera px a fingertip of that hand must move between frames for it to count as typing (live:
+                      # once the hand crop made hands larger, a hand resting on the palm rest was found in every
+                      # frame and every tap was rejected as typing)
+FINGERTIPS = (8, 12, 16, 20)  # index, middle, ring, little (MediaPipe landmark ids)
+MIN_HAND_PT = 200.0  # wrist to middle knuckle, in screen points: a real hand in front of the screen spans ~450+;
+                     # a hand shown ON the screen (the tutorial's 3D hand, live) spans under 100, so it is ignored
 
 
 def detect_marker_corners(frame):
@@ -565,13 +603,88 @@ class RegionGrabber:
         self.sct.close()
 
 
+class MjpegSource:
+    """The phone's MJPEG stream read directly (not via FFmpeg) so each frame's X-Capture-Time header is kept.
+    stamp: the last frame's capture time in Unix seconds, or None when the stream sends none."""
+
+    def __init__(self, url, timeout=3.0):
+        u = urllib.parse.urlsplit(url)
+        conn = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        self.conn = conn(u.hostname, u.port, timeout=timeout)  # connect and every read: a hung stream fails in 3 s
+        try:
+            self.conn.request("GET", u.path or "/")
+            self.resp = self.conn.getresponse()
+            ctype = self.resp.getheader("Content-Type", "")
+            if self.resp.status != 200 or "multipart" not in ctype:
+                raise OSError(f"not an MJPEG stream ({self.resp.status} {ctype})")
+        except BaseException:
+            self.conn.close()
+            raise
+        self.stamp = None
+        self.exact = False  # stamp is the true capture time (X-Capture-Source: phone-camera), no link delay in it
+
+    def isOpened(self):
+        return True
+
+    def read(self):
+        try:
+            headers = {}
+            while True:  # boundary line, then "Name: value" lines up to the blank line before the JPEG
+                line = self.resp.readline(1024)
+                if not line:
+                    return False, None
+                line = line.strip()
+                if not line:
+                    if "content-length" in headers:
+                        break
+                    continue
+                if b":" in line:
+                    k, v = line.split(b":", 1)
+                    headers[k.strip().lower().decode("latin-1")] = v.strip().decode("latin-1")
+            n = int(headers["content-length"])
+            if not 0 < n <= 20_000_000:
+                return False, None
+            data = self.resp.read(n)
+            if len(data) < n:
+                return False, None
+        except (OSError, ValueError, http.client.HTTPException):
+            return False, None
+        frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return False, None
+        try:
+            self.stamp = float(headers["x-capture-time"])
+        except (KeyError, ValueError):
+            self.stamp = None
+        # the phone's own camera stamps the real capture time; the glasses' stamps still hold the link's delay
+        self.exact = headers.get("x-capture-source") == "phone-camera"
+        return True, frame
+
+    def release(self):
+        self.conn.close()
+
+
 def open_source(args):
     if args.region:
         x, y, w, h = map(int, args.region.split(","))
         return RegionGrabber(x, y, w, h)
-    if args.source.isdigit():
+    if args.source.isdigit():  # a camera on this Mac (the panel's "camera pointed at the screen")
         cap = cv2.VideoCapture(int(args.source))
-    else:  # network stream: fail a hung read after 3 s (default 30 s), so a held drag can't stay down that long
+        if not cap.isOpened():  # macOS asks for Camera permission the first time and fails this try
+            raise SystemExit(f"cannot open camera {args.source}: allow {HOST_APP} under System Settings > Privacy & "
+                             "Security > Camera (macOS asks the first time), check the camera is on (an iPhone: "
+                             "nearby, same Apple ID), then start again.")
+        cams = maccam.devices()  # OpenCV opened it at ~480x360 (preset Medium): switch it to its best format
+        if int(args.source) < len(cams):
+            size = maccam.use_best_format(cams[int(args.source)])
+            print(f"camera {args.source}: {cams[int(args.source)].localizedName()}, format "
+                  + (f"{size[0]}x{size[1]}" if size else "unchanged (no format at 24 fps or more)"), flush=True)
+    else:
+        try:  # the phone's stream: read it ourselves to keep each frame's capture time
+            return MjpegSource(args.source)
+        except (OSError, http.client.HTTPException):
+            pass  # not multipart MJPEG (or not reachable): let FFmpeg try
+        # network stream: fail a hung read after 3 s (default 30 s), so a held drag can't stay down that long
         cap = cv2.VideoCapture(args.source, cv2.CAP_FFMPEG,
                                [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000])
     if not cap.isOpened():
@@ -586,7 +699,8 @@ def make_hand_landmarker():
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH + ".part")
         os.replace(MODEL_PATH + ".part", MODEL_PATH)
     opts = HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=MODEL_PATH),
-                                 running_mode=RunningMode.VIDEO, num_hands=2)  # 2 so the other hand is logged
+                                 running_mode=RunningMode.VIDEO, num_hands=3)  # 3: live, a hand shown on the screen (the
+    # tutorial's) plus a hand resting on the keyboard held both slots of 2, and the pointing hand wasn't found again
     return HandLandmarker.create_from_options(opts)
 
 
@@ -707,18 +821,21 @@ def marker_extent():
     return xs.min() / n, (xs.max() + 1) / n
 
 
-def overlay_child(size):
-    """Child process: one borderless always-on-top window per marker in the main screen's corners.
-    Prints each marker's four black-square corners (pyautogui points, top-left origin), then runs the AppKit loop."""
+def overlay_child(size, hidden=False):
+    """Child process: one borderless always-on-top window per marker: the main screen's corners and side edges.
+    Prints each marker's four black-square corners (pyautogui points, top-left origin), then runs the AppKit loop.
+    hidden: the windows start invisible; "show" / "hide" lines on stdin fade them in and out (on-demand markers)."""
     import AppKit
     lo, hi = marker_extent()
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)  # no Dock icon
     sf = AppKit.NSScreen.screens()[0].frame()  # menu-bar display: matches pyautogui's origin and size
     sx, sy, sw, sh = sf.origin.x, sf.origin.y, sf.size.width, sf.size.height
-    # Cocoa origin is bottom-left; corners by marker id: TL, TR, BR, BL
+    # Cocoa origin is bottom-left; corners by marker id: TL, TR, BR, BL, then the middle of the left and right edges,
+    # so most views of part of the screen still hold the 2 markers a fit needs (none mid-top/bottom: notch, Dock)
     corners = {0: (sx, sy + sh - size), 1: (sx + sw - size, sy + sh - size),
-               2: (sx + sw - size, sy), 3: (sx, sy)}
+               2: (sx + sw - size, sy), 3: (sx, sy),
+               4: (sx, sy + (sh - size) / 2), 5: (sx + sw - size, sy + (sh - size) / 2)}
     windows, quads = [], {}
     for i, (x, y) in corners.items():
         png = marker_png(i)
@@ -743,6 +860,8 @@ def overlay_child(size):
         view.setImage_(image)
         view.setImageScaling_(AppKit.NSImageScaleAxesIndependently)
         win.setContentView_(view)
+        if hidden:
+            win.setAlphaValue_(0.0)  # in place but invisible (it already lets clicks through)
         win.orderFrontRegardless()
         f = win.frame()  # macOS may have moved the window (menu bar, notch), so read the real frame
         fx, fy, fw, fh = f.origin.x, sh - (f.origin.y + f.size.height), f.size.width, f.size.height  # top-left origin
@@ -752,16 +871,25 @@ def overlay_child(size):
         windows.append((win, view))  # keep references alive for the run loop
     print(json.dumps(quads), flush=True)
 
-    def exit_with_parent():  # parent holds our stdin pipe; its EOF means the parent is gone
-        sys.stdin.read()
+    def fade(alpha):  # AppKit work belongs on the main thread
+        def run():
+            for win, _ in windows:
+                win.animator().setAlphaValue_(alpha)  # a short fade, not a flash
+        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(run)
+
+    def follow_parent():  # "show" / "hide" from the parent; EOF on our stdin pipe means the parent is gone
+        for line in sys.stdin:
+            if line.strip() in ("show", "hide"):
+                fade(1.0 if line.strip() == "show" else 0.0)
         os._exit(0)
-    threading.Thread(target=exit_with_parent, daemon=True).start()
+    threading.Thread(target=follow_parent, daemon=True).start()
     app.run()
 
 
-def start_overlay(size=140):
-    """Spawn the overlay child; return (proc, {id: (4, 2) corners}) with the markers' on-screen corners."""
-    proc = subprocess.Popen([sys.executable, __file__, "--overlay-child", str(size)],
+def start_overlay(size=140, hidden=False):
+    """Spawn the overlay child; return (proc, {id: (4, 2) corners}) with the markers' on-screen corners.
+    hidden: the markers start invisible (on-demand markers; overlay_set shows them)."""
+    proc = subprocess.Popen([sys.executable, __file__, "--overlay-child", str(size)] + (["--overlay-hidden"] if hidden else []),
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         deadline = time.monotonic() + 15
@@ -787,6 +915,46 @@ def start_overlay(size=140):
         raise
 
 
+def overlay_set(proc, shown):
+    """Fade the overlay's markers in (shown) or out. A dead child is caught by the run loop's poll."""
+    try:
+        proc.stdin.write("show\n" if shown else "hide\n")
+        proc.stdin.flush()
+    except (BrokenPipeError, ValueError):
+        pass
+
+
+class MarkerToggle:
+    """On-demand markers: hidden while the screen is found from what it shows; shown once it has gone unfound (no
+    marker or content fix) for MARKER_SHOW_AFTER s; hidden again after MARKER_HIDE_AFTER checks in a row,
+    MARKER_PROBE_EVERY s apart, find it from content alone. The matcher skips the marker windows, so the markers
+    themselves can't pass that check (which would hide them, lose the screen and show them again, in a loop)."""
+
+    def __init__(self, now):
+        self.shown, self.last_fix, self.t_probe, self.probes = False, now, -1e9, 0
+
+    def step(self, now, source, probe):
+        """source: this frame's fix ("markers", "content", "tracking" or None). probe(): True if content alone finds
+        the screen in this frame (called at most every MARKER_PROBE_EVERY s, while shown). Returns "show", "hide"
+        or None."""
+        if not self.shown:
+            if source in ("markers", "content"):
+                self.last_fix = now
+            elif now - self.last_fix > MARKER_SHOW_AFTER:
+                self.shown, self.probes = True, 0
+                return "show"
+            return None
+        if now - self.t_probe < MARKER_PROBE_EVERY:
+            return None
+        self.t_probe = now
+        found = source == "content" or (source == "markers" and probe())
+        self.probes = self.probes + 1 if found else 0
+        if self.probes >= MARKER_HIDE_AFTER:
+            self.shown, self.last_fix, self.probes = False, now, 0
+            return "hide"
+        return None
+
+
 def stop_overlay(proc):
     proc.stdin.close()  # child sees EOF and exits on its own
     if proc.poll() is None:
@@ -799,12 +967,16 @@ def stop_overlay(proc):
     proc.stdout.close()
 
 
-def accessibility_trusted():
-    """True if macOS lets this process post mouse events (pyautogui fails silently otherwise)."""
-    import ctypes
-    ax = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
-    ax.AXIsProcessTrusted.restype = ctypes.c_bool
-    return ax.AXIsProcessTrusted()
+def accessibility_trusted(prompt=False):
+    """True if macOS lets this process post mouse events (pyautogui fails silently otherwise). prompt: when it doesn't,
+    macOS adds the app this runs in to the Accessibility list and shows its dialog (the only sure way to list
+    GlassesTouch.app, whose program is really Homebrew's Python)."""
+    import Foundation
+    import objc
+    fns = {}
+    objc.loadBundleFunctions(Foundation.NSBundle.bundleWithPath_("/System/Library/Frameworks/ApplicationServices.framework"),
+                             fns, [("AXIsProcessTrustedWithOptions", b"Z@")])
+    return bool(fns["AXIsProcessTrustedWithOptions"]({"AXTrustedCheckOptionPrompt": prompt}))
 
 
 def overlay_regions(targets):
@@ -830,15 +1002,34 @@ def pointing_hand(hands, w, h, ref, on_screen=None):
     return min(pick, key=lambda i: math.hypot(hands[i][8].x * w - ref[0], hands[i][8].y * h - ref[1]))
 
 
-def typing_flag(hands, pointing, w, h, M, fresh, H, below=TYPING_BELOW):
-    """True when a hand other than the pointing one (index in `hands`) is over the keyboard: its index tip, mapped
-    through M, is more than `below` points under the screen (height H), or there is no fresh M to map it with."""
+def real_hands(hands, M, w, h, min_pt=MIN_HAND_PT):
+    """Indexes of the hands big enough to be real, measured on the screen plane through M (camera px -> points):
+    a picture of a hand on the screen (the tutorial's 3D hand) also looks like a hand to MediaPipe. Without M all count."""
+    if M is None:
+        return list(range(len(hands)))
+    return [i for i, hd in enumerate(hands)
+            if math.dist(raw_map(M, (hd[0].x * w, hd[0].y * h)), raw_map(M, (hd[9].x * w, hd[9].y * h))) >= min_pt]
+
+
+def other_hand_tips(hands, pointing, w, h):
+    """Camera-pixel fingertips (FINGERTIPS) of the hand that is not the pointing one, or None with one hand."""
     others = [hd for i, hd in enumerate(hands) if i != pointing]
-    if not others:
+    return np.float32([(others[0][j].x * w, others[0][j].y * h) for j in FINGERTIPS]) if others else None
+
+
+def typing_flag(hands, pointing, w, h, M, fresh, H, prev_tips=None, below=TYPING_BELOW, move=TYPING_MOVE):
+    """True when a hand other than the pointing one (index in `hands`) is typing: its index tip, mapped through M, is
+    more than `below` points under the screen (height H), and one of its fingertips moved more than `move` camera px
+    since the previous frame (prev_tips from other_hand_tips; None, the hand just appeared, counts as moving). A
+    hand resting on the keyboard or palm rest is not typing. No fresh M to map it with also counts as typing."""
+    tips = other_hand_tips(hands, pointing, w, h)
+    if tips is None:
         return False
     if not fresh or M is None:
         return True
-    return bool(raw_map(M, (others[0][8].x * w, others[0][8].y * h))[1] > H + below)
+    if raw_map(M, tuple(tips[0]))[1] <= H + below:
+        return False
+    return prev_tips is None or float(np.linalg.norm(tips - prev_tips, axis=1).max()) > move
 
 
 class TouchFuser:
@@ -908,14 +1099,15 @@ class TouchFuser:
                 outcome = f"weak acc={acc:.4f}"
             elif acc is not None and (acc > self.max_acc or feats.get("gyro_peak", 0.0) > TAP_MAX_GYRO):
                 outcome = f"knock acc={acc:.3f} gyro={feats.get('gyro_peak', 0.0):.1f}"
-            elif self._typing(tap):
-                outcome = "typing"
+            # (no typing veto: live, the keyboard hand moved as much resting as typing, and the veto rejected 41 real screen
+            # taps in one session; real typing puts the pointing finger on the keyboard, so "off-screen" rejects it.
+            # The typing flag stays in the log record.)
             elif not near:
                 outcome = "no-samples"
             elif not min(near, key=lambda s: abs(s[0] - tap))[3]:  # the nearest sample is off screen (keyboard)
                 outcome = f"off-screen n_off={sum(not s[3] for s in near)}/{len(near)}"
             else:
-                xy = np.float32([(x, y) for _, x, y, _ in near])
+                xy = np.float32([(x, y) for _, x, y, on in near if on])  # off-screen samples are (0, 0) placeholders
                 span = float(np.ptp(xy, axis=0).max())
                 if span > TOUCH_SPAN_MAX:
                     outcome = f"sweeping span={span:.0f}"
@@ -979,15 +1171,17 @@ class GestureEngine:
     that moves is always a drag, whatever the two-finger check says. A touch-down within
     GESTURE_DOUBLE s and GESTURE_DOUBLE_DIST of the last click is a press, decided within GESTURE_DECIDE: moved more
     than GESTURE_MOVE it is a drag (down at the touch point, moves, up on lift-off); still, it is a second click.
-    A drag ends on lift-off: the fingertip has come to rest (average speed below GESTURE_LIFT_SPEED over
-    GESTURE_LIFT_WINDOW), it has been off screen or absent for GESTURE_OFF, or GESTURE_MAX has passed. A scroll or a
-    two-finger press ends when the two-finger pose is lost, or the fingertip is off screen, for two frames (about
-    0.2 s); a scroll also ends at GESTURE_MAX. Frames are kept for GESTURE_HIST seconds so that a touch-down accepted
+    A drag or a scroll ends at its first pause (average speed below GESTURE_LIFT_SPEED over GESTURE_LIFT_WINDOW: the
+    camera can't see the finger leave the glass, so the pull-away would keep dragging or scroll back), when it has
+    been off screen or absent for GESTURE_OFF, or at GESTURE_MAX. A scroll or a two-finger press also ends when the
+    two-finger pose is lost, or the fingertip is off screen, for two frames (about 0.2 s). Frames are kept for GESTURE_HIST seconds so that a touch-down accepted
     late is replayed from its tap time.
     Actions: ("click"|"down"|"move"|"up"|"point", x, y) and ("scroll", dx, dy) in pyautogui units."""
 
     def __init__(self):
-        self.hist = deque()     # (t, x, y, on_screen, two_finger), for replaying a late touch-down
+        self.hist = deque()     # (t, x, y, on_screen, two_finger, hand span), for replaying a late touch-down
+        self.span0, self.grow_n = None, 0  # a drag's or scroll's hand size at its start; frames it looked bigger
+        self.notes = []          # debug lines: why each drag or scroll ended, the hand-size ratio per drag frame
         self.state = None       # None (idle), "decide" (pending press or two fingers), "press" (two fingers clicked,
                                 # still touching), "drag" or "scroll"
         self.start = None       # (t, x, y) of the touch-down
@@ -996,6 +1190,9 @@ class GestureEngine:
         self.pos = None         # drag: smoothed fingertip; scroll: last fingertip that counted
         self.track = deque()    # (t, x, y) on-screen fingertip samples of the drag, for the speed rule
         self.votes = []         # two_finger flags of the on-screen frames since the touch-down
+        self.offset = (0.0, 0.0)  # a drag: where it grabbed minus where the 2nd touch landed
+        self.scroll_dir = (0.0, 1.0)  # a scroll's axis and direction, from its first stroke
+        self.paused, self.dhist = None, []  # a drag's pause (spot, direction) and its recent points
         self.off_n = 0          # consecutive frames off screen or without a hand
         self.off_t = None       # capture time of the first of them
         self.last_t = None      # capture time of the last frame
@@ -1008,14 +1205,17 @@ class GestureEngine:
         """True while a drag holds the button down."""
         return self.state == "drag"
 
-    def frame(self, t, x, y, on, two):
-        self.hist.append((t, x, y, on, two))
+    def frame(self, t, x, y, on, two, span=None):
+        self.hist.append((t, x, y, on, two, span))
         while self.hist and t - self.hist[0][0] > GESTURE_HIST:
             self.hist.popleft()
         self.last_t = t
-        return self._step(t, x, y, on, two) if self.state else []
+        return self._step(t, x, y, on, two, span) if self.state else []
 
     def touch_down(self, t, x, y):
+        if self.state in ("drag", "scroll"):  # live: sliding or pressing on the lid fires the tap sensor 0.1-0.35 s
+            self.notes.append(f"tap ignored: {self.state} held")  # into a drag, which ended it (and could double-click)
+            return []
         acts = [self._click(*self.start)] if self.state == "decide" else []  # a pending touch that never moved
         acts += self.release()  # a new touch-down ends the current gesture first
         replay = [f for f in self.hist if f[0] > t]  # frames that arrived after the tap
@@ -1023,40 +1223,74 @@ class GestureEngine:
         two = 2 * sum(votes) > len(votes)
         near = (self.last_click is not None and t - self.last_click[0] <= GESTURE_DOUBLE
                 and math.hypot(x - self.last_click[1], y - self.last_click[2]) <= GESTURE_DOUBLE_DIST)
-        if not (two or near):  # one finger: the click is now, and no later frame can make it a drag or scroll
-            return acts + [self._click(t, x, y)]
-        self.state, self.start, self.double = "decide", (t, x, y), near
+        if near and not two:  # a second tap soon and near: a double-click, at once, at the first tap's spot (macOS
+            # needs both clicks at nearly the same point; the 2nd touch lands up to ~110 pt away)
+            _, lx, ly = self.last_click
+            self.last_click = None  # a third tap starts afresh
+            return acts + [("dclick", lx, ly)]
+        # one finger: the click is now; if the finger then holds still and slides, it becomes a drag ("hold")
+        # two fingers: decide whether they scroll
+        if not two:
+            acts.append(self._click(t, x, y))
+        self.state, self.start, self.double = ("decide" if two else "hold"), (t, x, y), False
         self.pos, self.votes, self.off_n, self.off_t, self.acc = (x, y), [], 0, None, [0.0, 0.0]
-        self.track, self.lost_n = deque(), 0
+        self.offset, self.track, self.lost_n, self.hold_prev = (0.0, 0.0), deque(), 0, None
         for f in replay:
             acts += self._step(*f)
         return acts
 
-    def release(self):
+    def release(self, why="ended"):
         """End the gesture without a new frame. A held drag sends its up; a pending or pressed touch is dropped."""
+        if self.state == "drag" and self.paused is not None:  # released during a pause: drop where the finger paused
+            self.pos = self.paused[0]
         acts = [("up", *self.pos)] if self.state == "drag" else []
-        self.state = None
+        if self.state in ("drag", "scroll"):
+            self.notes.append(f"{self.state} released: {why}")
+        self.state, self.span0, self.grow_n = None, None, 0
         return acts
 
     def tick(self, t):
         """Lift-off checks with no new frame (a camera stall): GESTURE_OFF since the last frame, or the cap."""
         if self.state in ("drag", "scroll") and self.last_t is not None and t - self.last_t > GESTURE_OFF:
-            return self.release()
+            return self.release("no frames")
         return self._cap(t)
 
     def _cap(self, t):
-        return self.release() if self.state in ("drag", "scroll") and t - self.t_gesture >= GESTURE_MAX else []
+        return self.release("time cap") if self.state in ("drag", "scroll") and t - self.t_gesture >= GESTURE_MAX else []
 
     def _click(self, t, x, y):
         self.last_click = (t, x, y)
         return ("click", x, y)
 
-    def _step(self, t, x, y, on, two):
+    def _step(self, t, x, y, on, two, span=None):
         if self.state is None:  # a replayed frame after the gesture has ended changes nothing
             return []
         if self.state in ("drag", "scroll"):
-            return self._track_frame(t, x, y, on, two)
+            return self._track_frame(t, x, y, on, two, span)
         t0, px, py = self.start
+        if self.state == "hold":  # a clicked tap: still for GESTURE_HOLD, then a slide, is a drag from the tap point
+            if not on:
+                self.lost_n += 1
+                if self.lost_n >= 2:  # the finger left the screen: just the click
+                    self.state = None
+                return []
+            self.lost_n = 0
+            moved = math.hypot(x - px, y - py)
+            if t - t0 < GESTURE_HOLD:
+                if moved > GESTURE_MOVE:  # moved before it was held: the finger lifting off, the click stands
+                    self.state = None
+                self.hold_prev = moved
+                return []
+            prev, self.hold_prev = self.hold_prev, moved
+            if prev is not None and prev > GESTURE_DRAG_MOVE and moved > prev + GESTURE_DRAG_GO:  # past 60 pt and
+                # still sliding away a frame later
+                self.state, self.t_gesture, self.pos = "drag", t, (px, py)
+                self.last_click = None  # the tap that became a drag isn't half of a double-click
+                self.paused, self.dhist = None, [(t0, px, py)]  # pause-then-turn state; the drag's recent points
+                return [("down", px, py)] + self._track_frame(t, x, y, on, two, span)
+            if t - t0 > GESTURE_HOLD_WAIT:
+                self.state = None
+            return []
         if on:
             self.votes.append(two)
         two_f = 2 * sum(self.votes) > len(self.votes)  # two fingers by majority of the on-screen frames
@@ -1065,7 +1299,7 @@ class GestureEngine:
             if self.lost_n >= 2:
                 self.state = None
                 return []
-        elif t - t0 >= GESTURE_DECIDE:  # still for the whole window: a click, and the touch is over (keeping a
+        elif t - t0 >= (GESTURE_PRESS_WAIT if self.double else GESTURE_DECIDE):  # still for the whole window: a click, and the touch is over (keeping a
             # two-finger touch open made the hand's withdrawal scroll, live, when the pose check misread one finger)
             self.state, self.lost_n = None, 0
             if self.double:  # a still double-tap: a real double-click at the first tap's spot (macOS needs both
@@ -1074,36 +1308,82 @@ class GestureEngine:
                 self.last_click = None  # a third tap starts afresh
                 return [("dclick", lx, ly)]
             return [self._click(t0, px, py)]
-        if not (on and math.hypot(x - px, y - py) > GESTURE_MOVE):
+        moved = math.hypot(x - px, y - py) if on else 0.0
+        if self.double and t - t0 < GESTURE_LIFTOFF and moved > GESTURE_MOVE:  # moved away at once: lift-off after a
+            self.state, self.lost_n = None, 0                                    # double-tap, not a drag
+            _, lx, ly = self.last_click
+            self.last_click = None
+            return [("dclick", lx, ly)]
+        if moved <= (GESTURE_DRAG_MOVE if self.double else GESTURE_MOVE):
             return []
         if two_f and not self.double:  # two fingers: scroll at once (a double-tap press is always a drag: live, the
             # two-finger check said yes during one-finger drags and turned every drag into a scroll)
             self.state, self.t_gesture, self.lost_n = "scroll", t, 0
-            return [("point", px, py)] + self._track_frame(t, x, y, on, two)
+            ddx, ddy = x - px, y - py  # the first stroke sets the scroll's axis and direction (scroll_dir)
+            sideways = abs(ddx) > SCROLL_SIDEWAYS * abs(ddy)  # vertical unless clearly sideways
+            self.scroll_dir = (math.copysign(1.0, ddx), 0.0) if sideways else (0.0, math.copysign(1.0, ddy))
+            self.notes.append(f"scroll start stroke=({ddx:.0f},{ddy:.0f}) {'sideways' if sideways else 'vertical'}")
+            return [("point", px, py)] + self._track_frame(t, x, y, on, two, span)
         if self.state == "press":  # a tap that was clicked never becomes a drag
             return []
-        if self.double:  # a press that moves: drag from its touch point
-            self.state, self.t_gesture, self.pos, self.last_click = "drag", t, (px, py), None
-            return [("down", px, py)] + self._track_frame(t, x, y, on, two)
+        if self.double:  # a press that rests, then slides: grab at the FIRST tap's spot (the 2nd touch lands 60-110 pt
+            # off, live, and missed what was double-tapped) and follow the finger's movement from there
+            _, lx, ly = self.last_click
+            self.offset = (lx - px, ly - py)
+            self.state, self.t_gesture, self.pos, self.last_click = "drag", t, (lx, ly), None
+            return [("down", lx, ly)] + self._track_frame(t, x, y, on, two, span)
         self.state = None  # one finger that moved inside the window: its click, and nothing else
         return [self._click(t0, px, py)]
 
-    def _track_frame(self, t, x, y, on, two):
+    def _track_frame(self, t, x, y, on, two, span=None):
         if self.state == "scroll":  # the two-finger pose lost for two frames: the scroll is over
             self.lost_n = 0 if on and two else self.lost_n + 1
             if self.lost_n >= 2:
-                return self.release()
+                return self.release("two-finger pose lost")
         if not on:
             self.off_n += 1
             if self.off_n == 1:
                 self.off_t = t
             if self.off_n >= 2 and t - self.off_t > GESTURE_OFF:  # one dropped frame is a burst, not a lift
-                return self.release()
+                return self.release("off screen")
             return self._cap(t)
+        if span:  # lift-off: the hand came toward the eye (looks bigger) for two frames; end before this frame moves
+            if self.span0 is None:
+                self.span0 = span
+            ratio = span / self.span0
+            self.notes.append(f"{self.state} size={ratio:.2f}")
+            if ratio > 1 + (SCROLL_LIFT_GROW if self.state == "scroll" else GESTURE_LIFT_GROW):
+                self.grow_n += 1
+                if self.grow_n >= 2:
+                    return self.release(f"hand grew x{ratio:.2f}")
+                return self._cap(t)  # maybe lifting: hold this frame's movement back until the next frame says
+            else:
+                self.grow_n = 0
+                self.span0 = 0.9 * self.span0 + 0.1 * span  # follow slow changes (the hand turning as it drags)
+        if self.state == "drag":  # the finger's movement, carried over to where the drag grabbed
+            x, y = x + self.offset[0], y + self.offset[1]
         if self.off_n:  # back on screen: continue from here, no leap across the gap
             self.off_n = 0
             self.pos = (x, y)
         acts = []
+        if self.state == "drag":  # pause then turn: the pull-away after a drop, not more dragging
+            prev = self.dhist[-1]
+            if self.paused is None:
+                if t > prev[0] and math.dist(prev[1:], (x, y)) / (t - prev[0]) < GESTURE_PAUSE_SPEED and len(self.dhist) >= 3:
+                    back = self.dhist[-3]
+                    self.paused = ((x, y), (x - back[1], y - back[2]))  # where it paused, the way it was going
+                self.dhist = (self.dhist + [(t, x, y)])[-6:]
+            if self.paused is not None:
+                (qx, qy), (bx, by) = self.paused
+                ax, ay = x - qx, y - qy
+                if math.hypot(ax, ay) < GESTURE_RESUME:  # still at the pause: hold the movement back
+                    return self._stop_check(t, x, y, acts)
+                cos = (ax * bx + ay * by) / (math.hypot(ax, ay) * math.hypot(bx, by) or 1.0)
+                if math.hypot(bx, by) >= 20 and cos < math.cos(math.radians(GESTURE_TURN)):
+                    self.pos = (qx, qy)  # dropped where it paused; the turn is never sent
+                    return acts + self.release(f"turned {math.degrees(math.acos(max(-1.0, min(1.0, cos)))):.0f} deg after a pause")
+                self.paused = None  # carries on the same way: drag on
+                self.dhist = (self.dhist + [(t, x, y)])[-6:]
         if self.state == "drag":
             a = GESTURE_SMOOTH
             self.pos = (a * x + (1 - a) * self.pos[0], a * y + (1 - a) * self.pos[1])
@@ -1111,22 +1391,44 @@ class GestureEngine:
         else:  # content follows the finger (natural scrolling); motion under the deadband is jitter
             dx, dy = x - self.pos[0], y - self.pos[1]
             if math.hypot(dx, dy) >= SCROLL_DEADBAND:
-                self.acc[0] -= dx * SCROLL_GAIN
-                self.acc[1] += dy * SCROLL_GAIN
+                # only along the first stroke's direction: live, repeated strokes scrolled back on every return stroke
+                # (the fingers moving back just above the glass look the same as touching it)
+                ux, uy = self.scroll_dir
+                d = max(dx * ux + dy * uy, 0.0)
+                self.acc[0] -= ux * d * SCROLL_GAIN
+                self.acc[1] += uy * d * SCROLL_GAIN
                 self.pos = (x, y)
             ix, iy = int(self.acc[0]), int(self.acc[1])
             if ix or iy:
                 self.acc[0] -= ix
                 self.acc[1] -= iy
                 acts.append(("scroll", ix, iy))
+        return self._stop_check(t, x, y, acts)
+
+    def _stop_check(self, t, x, y, acts):
         self.track.append((t, x, y))
         while t - self.track[0][0] > GESTURE_LIFT_WINDOW:
             self.track.popleft()
-        if self.state == "drag" and len(self.track) >= 2:
+        if len(self.track) >= 2:  # drag or scroll: a real stop also ends it (a lift the hand size didn't show)
             (t1, x1, y1), (t2, x2, y2) = self.track[0], self.track[-1]
-            if t2 > t1 and math.hypot(x2 - x1, y2 - y1) / (t2 - t1) < GESTURE_LIFT_SPEED:
-                return acts + self.release()  # the finger has come to rest
+            if self.state == "scroll":  # distance travelled: back-and-forth strokes net to ~0 but aren't a stop
+                dist = sum(math.dist(p[1:], q[1:]) for p, q in zip(self.track, list(self.track)[1:]))
+            else:  # net movement: a drag's stop jitters 15-22 pt per frame, which travelled distance would miss
+                dist = math.hypot(x2 - x1, y2 - y1)
+            if t2 - t1 >= GESTURE_LIFT_WINDOW - 0.07 and dist / (t2 - t1) < GESTURE_LIFT_SPEED:
+                return acts + self.release("stopped")
         return acts + self._cap(t)
+
+
+def double_click(x, y):
+    """The second half of a double-click: one press with click state 2. The first tap was already clicked at this spot
+    (GestureEngine only emits dclick after a click there), so a whole double-click here made apps see three presses.
+    (pyautogui's doubleClick posts plain clicks, which browsers and the Finder count as single clicks.)"""
+    import Quartz  # PyObjC, installed with pyautogui on macOS
+    for kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
+        ev = Quartz.CGEventCreateMouseEvent(None, kind, (x, y), Quartz.kCGMouseButtonLeft)
+        Quartz.CGEventSetIntegerValueField(ev, Quartz.kCGMouseEventClickState, 2)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
 
 
 def perform_gestures(acts, args):
@@ -1148,7 +1450,7 @@ def perform_gestures(acts, args):
         if kind == "click":
             pyautogui.click(*v)
         elif kind == "dclick":
-            pyautogui.doubleClick(*v)
+            double_click(*v)
         elif kind == "down":
             pyautogui.mouseDown(*v, button="left")
         elif kind == "move":
@@ -1165,7 +1467,7 @@ def perform_gestures(acts, args):
     return flash
 
 
-def touch_step(engine, fuser, cap, tip, on, two):
+def touch_step(engine, fuser, cap, tip, on, two, span=None):
     """One camera frame of touch handling, as run() does it. tip: fingertip (x, y) in screen points, or None when
     no hand was found; on: fingertip on screen under a trusted M; cap: the frame's capture time. Returns the actions
     in order: the frame's, then those of the touch-downs TouchFuser accepted, then any lift-off without a frame."""
@@ -1173,7 +1475,7 @@ def touch_step(engine, fuser, cap, tip, on, two):
         acts = engine.frame(cap, 0.0, 0.0, False, False)
     else:
         fuser.add_fingertip(cap, float(tip[0]), float(tip[1]), bool(on))
-        acts = engine.frame(cap, float(tip[0]), float(tip[1]), bool(on), two)
+        acts = engine.frame(cap, float(tip[0]), float(tip[1]), bool(on), two, span)
     fuser.poll(cap)  # taps at least TOUCH_SETTLE old, decided on capture time
     for t_tap, x, y in fuser.downs:
         acts += engine.touch_down(t_tap, x, y)
@@ -1245,6 +1547,120 @@ def drain_taps(sock, fuser, limit=TOUCH_DRAIN_MAX):
             fuser.add_tap(t, peak, feats)
 
 
+def stamped_capture_time(now_mono, now_wall, stamp, link_latency):
+    """Monotonic capture time of a frame the phone stamped (X-Capture-Time, Unix seconds). The stamp still holds the
+    glasses-to-phone minimum delay, link_latency. None when the stamp is from the future or over 3 s old: the
+    phone's and the Mac's clocks disagree, so the caller falls back to capture_time()."""
+    lag = now_wall - stamp
+    if not -0.5 <= lag <= 3.0:
+        return None
+    return now_mono - lag - link_latency
+
+
+HAND_CROP_MARGIN = (0.3, 0.2, 0.3, 0.7)  # left, top, right, bottom, as fractions of the screen's size in the frame
+
+
+def hand_crop(M, W, H, w, h, prev):
+    """Frame box (x0, y0, x1, y1) for hand detection: the screen's bounding box in the camera image plus margins
+    (most below: the arm comes from there), so the hand is larger in the landmarker's input. The previous box is
+    kept unless the new one moved by over 10 % of the screen's size: the landmarker tracks the hand between frames
+    in crop coordinates. With no M the previous box (or None, the whole frame) stays."""
+    if M is None:
+        return prev
+    quad = cv2.perspectiveTransform(np.float32([[0, 0], [W, 0], [W, H], [0, H]]).reshape(-1, 1, 2),
+                                    np.linalg.inv(M)).reshape(-1, 2)
+    (x0, y0), (x1, y1) = quad.min(axis=0), quad.max(axis=0)
+    sw, sh = x1 - x0, y1 - y0
+    l, t, r, b = HAND_CROP_MARGIN
+    box = (max(0, int(x0 - l * sw)), max(0, int(y0 - t * sh)), min(w, int(x1 + r * sw)), min(h, int(y1 + b * sh)))
+    if box[2] - box[0] < 64 or box[3] - box[1] < 64:
+        return prev
+    if prev is not None and max(abs(a - c) for a, c in zip(box, prev)) < 0.1 * max(sw, sh):
+        return prev
+    return box
+
+
+def remap_landmarks(hands, box, w, h):
+    """Landmarks found in the crop box -> normalised coordinates of the whole w x h frame (in place)."""
+    x0, y0, x1, y1 = box
+    for hand in hands:
+        for p in hand:
+            p.x = (x0 + p.x * (x1 - x0)) / w
+            p.y = (y0 + p.y * (y1 - y0)) / h
+
+
+class ScreenMatcher:
+    """Finds the screen in a camera frame by matching it against a screenshot of the Mac's own display (ORB features,
+    RANSAC homography), so any visible part of the screen gives a fix, with no markers in view. Synthetic tests:
+    1.4-3.9 pt error, 5-8 ms per frame. macOS gives apps without Screen Recording permission only the wallpaper,
+    so run() checks that first. grab: returns a BGR screenshot (any scale); tests pass their own."""
+    SHOT_SCALE = 0.5  # features on a half-size screenshot (in points): about the camera's pixels per point
+    SHOT_EVERY = 1.0  # seconds between screenshots: the screen changes, and matching tolerates a little staleness
+    MIN_INLIERS = 25  # matches a fit must explain; fewer is a guess
+
+    def __init__(self, W, H, grab=None):
+        self.W, self.H = W, H
+        if grab is None:
+            sct = mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+            mon = sct.monitors[1]  # the menu-bar display, as pyautogui's coordinates
+            grab = lambda: np.asarray(sct.grab(mon))[:, :, :3]
+            self._close = sct.close
+        else:
+            self._close = lambda: None
+        self.grab = grab
+        self.ignore = []  # screen-point polygons left out of the screenshot's features (the marker windows)
+        # fastThreshold 6 (default 20): faint corners count too. Simulated glasses views at 504x896: a desktop matched
+        # 34/40 either way, the tutorial's faint camouflage 40/40 (0/40 at 20); about twice the time (3-5 -> 6-12 ms)
+        self.orb = cv2.ORB_create(3000, fastThreshold=6)
+        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+        self.t_shot, self.des, self.pts = -1e9, None, None
+
+    def _refresh(self, now):
+        g = cv2.cvtColor(np.ascontiguousarray(self.grab()), cv2.COLOR_BGR2GRAY)
+        f = self.W * self.SHOT_SCALE / g.shape[1]  # the screenshot may be in points or Retina pixels
+        g = cv2.resize(g, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        mask = None
+        if self.ignore:  # the screen as it is without markers: matching must not lean on them
+            mask = np.full(g.shape, 255, np.uint8)
+            cv2.fillPoly(mask, [np.int32(np.round(p * self.SHOT_SCALE)) for p in self.ignore], 0)
+        kp, self.des = self.orb.detectAndCompute(g, mask)
+        self.pts = np.float32([k.pt for k in kp]) / self.SHOT_SCALE if kp else None  # in screen points
+        self.t_shot = now
+
+    def match(self, gray, now, box=None):
+        """M (camera px -> screen points) or None. box: only look for features in this frame region (x0, y0, x1, y1)."""
+        if now - self.t_shot >= self.SHOT_EVERY:
+            self._refresh(now)
+        if self.des is None or len(self.des) < self.MIN_INLIERS:
+            return None
+        mask = None
+        if box is not None:
+            mask = np.zeros(gray.shape[:2], np.uint8)
+            mask[box[1]:box[3], box[0]:box[2]] = 255
+        kc, dc = self.orb.detectAndCompute(gray, mask)
+        if dc is None or len(kc) < self.MIN_INLIERS:
+            return None
+        pairs = self.matcher.knnMatch(dc, self.des, k=2)
+        good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < 0.75 * p[1].distance]  # Lowe's ratio test
+        if len(good) < self.MIN_INLIERS:
+            return None
+        pc = np.float32([kc[g.queryIdx].pt for g in good])
+        ps = self.pts[[g.trainIdx for g in good]]
+        M, inliers = cv2.findHomography(pc, ps, cv2.RANSAC, 6.0)
+        if M is None or int(inliers.sum()) < self.MIN_INLIERS:
+            return None
+        return M
+
+    def close(self):
+        self._close()
+
+
+def screen_recording_allowed():
+    """True if macOS lets this process see other apps' windows in screenshots (Screen Recording permission)."""
+    import Quartz
+    return bool(Quartz.CGPreflightScreenCaptureAccess())
+
+
 def capture_time(arrival, camera_latency):
     """Monotonic capture time of a camera frame that arrived at `arrival`: frames lag real time by camera_latency."""
     return arrival - camera_latency
@@ -1294,18 +1710,21 @@ def run(args):
     W, H = pyautogui.size()
     pyautogui.PAUSE = 0
     pyautogui.FAILSAFE = True
-    if not args.dry_run and not accessibility_trusted():
-        raise SystemExit("macOS hasn't granted Accessibility permission to the app running this "
-                         "(Terminal or Claude), so the cursor can't move. Enable it in System Settings > "
-                         "Privacy & Security > Accessibility, restart that app, and run again.")
+    if not args.dry_run and not accessibility_trusted(prompt=True):
+        raise SystemExit(f"macOS hasn't granted Accessibility permission to {HOST_APP} (the app the tracker runs in), "
+                         f"so the cursor can't move. Turn {HOST_APP} on in System Settings > Privacy & Security > "
+                         f"Accessibility, then quit {HOST_APP} and open it again.")
     landmarker = make_hand_landmarker()  # before the camera opens, so a download failure cannot leak it
     src = open_source(args)
     pinch = PinchDetector()
     M, last_ok, smooth, t0, last_ts = None, 0.0, None, time.monotonic(), -1
-    overlay, targets = None, None
+    overlay, targets, matcher = None, None, None  # matcher: finds the screen from its content
     touch_sock, touch_flash = None, None  # touch_flash: ((x, y) screen point, monotonic time to stop showing)
     engine = GestureEngine()  # touch-downs and fingertip frames -> click / drag / scroll actions
     view, prev_tip = None, None  # prev_tip: last frame's pointing fingertip (camera px), None without a hand
+    crop, stamp_warned = None, False  # crop: hand-detection box in the frame, None for the whole frame
+    prev_other = None  # last frame's fingertips of the non-pointing hand (typing_flag)
+    frame_size = None  # (w, h) of the first frame, logged once
     try:
         if args.view_port:
             try:
@@ -1313,8 +1732,25 @@ def run(args):
             except OSError as e:
                 raise SystemExit(f"cannot serve the view on 127.0.0.1:{args.view_port} ({e}); "
                                  "another process may hold it.")
+        if not args.no_content_match:  # with markers it fills their gaps; without them it is how the screen is found
+            if screen_recording_allowed():
+                matcher = ScreenMatcher(W, H)
+            else:  # asks macOS once (it adds the app to the list)
+                import Quartz
+                Quartz.CGRequestScreenCaptureAccess()
+                print(f"Screen Recording is off for {HOST_APP} (the app the tracker runs in, not the browser), so the "
+                      "screen can't be found from what it shows" + (", only from the markers" if args.show_markers else
+                      ": turn Screen markers on, or") + f". Turn {HOST_APP} on in System Settings > Privacy & Security > "
+                      f"Screen Recording, then quit {HOST_APP} and open GlassesTouch again.", flush=True)
+        toggle = None  # on-demand markers: hidden until the screen can't be found from its content
         if args.show_markers:
-            overlay, targets = start_overlay(args.marker_size)
+            on_demand = args.markers_on_demand and matcher is not None  # no content matching: markers stay on
+            overlay, targets = start_overlay(args.marker_size, hidden=on_demand)
+            if matcher is not None:
+                matcher.ignore = overlay_regions(targets)
+            if on_demand:
+                toggle = MarkerToggle(time.monotonic())
+                print("markers hidden until the screen can't be found from what it shows", flush=True)
         tracker = ScreenTracker(W, H, overlay_regions(targets) if targets is not None else None)
         hand_poly = None  # previous frame's hand, kept out of the tracker's features
         fuser = TouchFuser(args.tap_min_acc, args.tap_max_acc)
@@ -1322,8 +1758,8 @@ def run(args):
             touch_sock = open_touch_socket(args.touch_port)
         last_frame_wall = time.monotonic()  # wall clock of the last camera frame (stall detection)
         last_marker, stale_logged, drift = time.monotonic(), False, {}  # last marker reset; drift guard state
-        stats = {"t": time.monotonic(), "frames": 0, "hand": 0, "markers": 0, "tracking": 0, "none": 0, "two": 0,
-                 "wait": 0.0, "proc": 0.0}
+        stats = {"t": time.monotonic(), "frames": 0, "hand": 0, "markers": 0, "content": 0, "tracking": 0, "none": 0, "two": 0,
+                 "wait": 0.0, "proc": 0.0, "lags": [], "kb": [], "spans": [], "pics": 0}
         prev_now = None
         while True:
             if overlay is not None and overlay.poll() is not None:
@@ -1335,7 +1771,23 @@ def run(args):
             if not ok:
                 print("video source ended")
                 break
+            if frame_size is None:  # once: the size that really arrives (a camera's format switch can fail quietly)
+                frame_size = frame.shape[1::-1]
+                print(f"frames arrive at {frame_size[0]}x{frame_size[1]}", flush=True)
             now = time.monotonic()
+            stamp = getattr(src, "stamp", None)  # the phone's capture time for this frame, if it sent one
+            if stamp is not None:
+                cap_t = stamped_capture_time(now, time.time(), stamp, 0.0 if src.exact else args.link_latency)
+                if cap_t is None and not stamp_warned:
+                    print("frame capture times are over 3 s off: are the phone's and the Mac's clocks set "
+                          "automatically? Guessing from arrival time instead.", flush=True)
+                    stamp_warned = True
+                if cap_t is not None and args.touch_debug:  # the stats line reports it once a second
+                    stats["lags"].append(now - cap_t)
+            else:
+                cap_t = None
+            if cap_t is None:
+                cap_t = capture_time(now, args.camera_latency)
             stats["wait"] += now - t_read  # time blocked waiting for the next frame
             prev_now = now
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -1346,8 +1798,14 @@ def run(args):
                 M_new = homography_from_markers(centres, W, H)
                 if M_new is not None and screen_quad(M_new, W, H) is None:
                     M_new = None  # singular fit counts as a failure
+                M_c = matcher.match(gray, now) if matcher is not None and M_new is None else None
+                if M_c is not None and screen_quad(M_c, W, H) is None:
+                    M_c = None
                 if M_new is not None:
                     M, last_ok, source = M_new, now, "markers"
+                    tracker.reset(gray, M)
+                elif M_c is not None:  # no markers on screen: found from what the screen shows
+                    M, last_ok, source = M_c, now, "content"
                     tracker.reset(gray, M)
                 else:  # markers missing: follow the screen; HOLD_SECONDS applies only if this fails too
                     M_t = tracker.update(gray, hand_poly)
@@ -1360,6 +1818,19 @@ def run(args):
                 held = M if M is not None and now - last_ok <= HOLD_SECONDS else None
                 M_new, source, reset, corners, redetected, dropped = overlay_fix(
                     gray, corners, targets, M_track, held, hand_poly, W, H, drift, M)
+                if matcher is not None and source != "markers":  # too few markers: find the screen from its content
+                    M_c = matcher.match(gray, now)
+                    if M_c is not None and screen_quad(M_c, W, H) is not None:
+                        M_new, source, reset = M_c, "content", True  # a fresh fix, like the markers'
+                if toggle is not None:
+                    def content_finds_it():  # this frame, from content alone (the matcher skips the markers)
+                        M_p = matcher.match(gray, now)
+                        return M_p is not None and screen_quad(M_p, W, H) is not None
+                    act = toggle.step(now, source, content_finds_it)
+                    if act:
+                        overlay_set(overlay, act == "show")
+                        print("markers shown: the screen was lost" if act == "show" else
+                              "markers hidden: the screen is found from what it shows", flush=True)
                 centres = {i: c.mean(axis=0) for i, c in corners.items()}
                 dropped_centres = {i: c.mean(axis=0) for i, c in dropped.items()}
                 if reset:
@@ -1380,10 +1851,22 @@ def run(args):
             if not m_valid:
                 smooth = None
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w = frame.shape[:2]
+            if not args.no_hand_crop:
+                crop = hand_crop(M if m_valid else None, W, H, w, h, crop)
+            box = crop or (0, 0, w, h)
+            rgb = np.ascontiguousarray(cv2.cvtColor(frame[box[1]:box[3], box[0]:box[2]], cv2.COLOR_BGR2RGB))
             last_ts = max(int((now - t0) * 1000), last_ts + 1)  # VIDEO mode needs strictly increasing timestamps
             res = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), last_ts)
-            h, w = frame.shape[:2]
+            if crop:
+                remap_landmarks(res.hand_landmarks, crop, w, h)
+            keep = real_hands(res.hand_landmarks, M if m_valid else None, w, h)
+            if len(keep) < len(res.hand_landmarks):  # drop pictures of hands on the screen, keeping the lists in step
+                res.hand_landmarks = [res.hand_landmarks[i] for i in keep]
+                res.hand_world_landmarks = [res.hand_world_landmarks[i] for i in keep] if res.hand_world_landmarks else []
+                res.handedness = [res.handedness[i] for i in keep] if res.handedness else []
+                if args.touch_debug:
+                    stats["pics"] += 1
             lm, k = None, None
             if res.hand_landmarks:  # the pointing hand: nearest the last fingertip, else nearest the screen centre
                 ref = prev_tip
@@ -1398,6 +1881,8 @@ def run(args):
             if args.touch_debug:  # once a second: is the hand found, where M comes from, is the loop keeping up
                 stats["frames"] += 1
                 stats["hand"] += lm is not None
+                if lm is not None and M is not None and m_valid:  # the pointing hand's size on the screen plane
+                    stats["spans"].append(math.dist(raw_map(M, (lm[0].x * w, lm[0].y * h)), raw_map(M, (lm[9].x * w, lm[9].y * h))))
                 stats[source or "none"] += 1
                 if lm is not None and res.hand_world_landmarks:  # the pointing hand's pose, to tune two_finger
                     pw = [(p.x, p.y, p.z) for p in res.hand_world_landmarks[k]]
@@ -1407,19 +1892,30 @@ def run(args):
                     n = max(stats["frames"], 1)
                     pose = stats.get("pose")
                     pose = (" ext=" + "/".join(f"{e:.2f}" for e in pose[0]) + f" gap={pose[1]:.2f}") if pose else ""
+                    lags = sorted(stats["lags"])  # frame delay from capture, when the phone stamps frames
+                    lag = f"{1000 * lags[len(lags) // 2]:.0f}/{1000 * lags[-1]:.0f}ms" if lags else "-"
+                    cw = f"{crop[2] - crop[0]}x{crop[3] - crop[1]}" if crop else "full"
+                    kbs = sorted(stats["kb"])  # the other hand's biggest fingertip move per frame (px): resting vs typing
+                    kb = f"{kbs[len(kbs) // 2]:.0f}/{kbs[-1]:.0f}px" if kbs else "-"
+                    sp = sorted(stats["spans"])  # real hand size (pt): must stay well above MIN_HAND_PT
+                    span = f"{sp[0]:.0f}-{sp[-1]:.0f}pt" if sp else "-"
                     debug_log(f"stats fps={stats['frames'] / (now - stats['t']):.1f} hand={stats['hand']}/{n} "
-                              f"M markers={stats['markers']} tracking={stats['tracking']} none={stats['none']} "
+                              f"M markers={stats['markers']} content={stats['content'] if matcher is not None else 'off'} tracking={stats['tracking']} none={stats['none']} "
                               f"proc={1000 * stats['proc'] / n:.0f}ms wait={1000 * stats['wait'] / n:.0f}ms "
-                              f"two={stats['two']}/{n}{pose}")
-                    stats.update(t=now, frames=0, hand=0, markers=0, tracking=0, none=0, wait=0.0, proc=0.0, two=0,
+                              f"two={stats['two']}/{n}{pose} lag={lag} crop={cw} kb={kb} span={span} pics={stats['pics']}")
+                    stats.update(t=now, frames=0, hand=0, markers=0, content=0, tracking=0, none=0, wait=0.0, proc=0.0, two=0, lags=[], kb=[], spans=[], pics=0,
                                  pose=None)
             hand_poly = hand_exclusion(lm, w, h) if lm is not None else None
             status, ev = ("no hand" if lm is None else "tracking"), None
             if args.touch:
                 drain_taps(touch_sock, fuser)
-                cap = capture_time(now, args.camera_latency)
+                cap = cap_t
                 fuser.add_hands(cap, len(res.hand_landmarks))
-                fuser.add_typing(cap, typing_flag(res.hand_landmarks, k, w, h, M, source is not None, H))
+                tips_other = other_hand_tips(res.hand_landmarks, k, w, h)
+                fuser.add_typing(cap, typing_flag(res.hand_landmarks, k, w, h, M, source is not None, H, prev_other))
+                if tips_other is not None and prev_other is not None and args.touch_debug:
+                    stats["kb"].append(float(np.linalg.norm(tips_other - prev_other, axis=1).max()))
+                prev_other = tips_other
                 # no camera frame for GESTURE_STALL while a button is held: release it before this frame
                 acts = engine.release() if engine.held and now - last_frame_wall > GESTURE_STALL else []
                 last_frame_wall = now
@@ -1431,9 +1927,15 @@ def run(args):
                     on = fresh and screen_point(tip, W, H)[1]  # tip stays raw for the log; actions clamp it
                     world = res.hand_world_landmarks[k] if res.hand_world_landmarks else None
                     pose = [(p.x, p.y, p.z) for p in world] if world else [(p.x * w, p.y * h) for p in lm]
-                    acts += touch_step(engine, fuser, cap, tip, on, two_finger(pose))
+                    span = (math.dist(raw_map(M, (lm[0].x * w, lm[0].y * h)), raw_map(M, (lm[9].x * w, lm[9].y * h)))
+                            if fresh else None)  # hand size on the screen plane: grows when the finger lifts off
+                    acts += touch_step(engine, fuser, cap, tip, on, two_finger(pose), span)
                 else:
                     acts += touch_step(engine, fuser, cap, None, False, False)  # hand lost
+                if args.touch_debug:
+                    for note in engine.notes:
+                        debug_log(note)
+                engine.notes.clear()
                 flash = perform_gestures(acts, args)
                 if flash is not None:
                     touch_flash = (flash, time.monotonic() + 0.3)
@@ -1465,14 +1967,14 @@ def run(args):
                     pyautogui.mouseUp()
 
             quad = screen_quad(M, W, H) if source is not None else None
-            if quad is not None:  # screen quad: green from markers, yellow from tracking
-                cv2.polylines(frame, [_poly(quad, frame.shape[:2])], True,
-                              (0, 255, 0) if source == "markers" else (0, 255, 255), 2)
+            if quad is not None:  # screen outline: green from markers, light blue from content, yellow from tracking
+                colour = {"markers": (0, 255, 0), "content": (255, 200, 80)}.get(source, (0, 255, 255))
+                cv2.polylines(frame, [_poly(quad, frame.shape[:2])], True, colour, 2)
             if touch_flash is not None and time.monotonic() < touch_flash[1] and m_valid:
                 cx, cy = raw_map(np.linalg.inv(M), touch_flash[0])  # screen point back into the camera image
                 cv2.circle(frame, (int(cx), int(cy)), 14, (255, 0, 255), 3)
             draw_debug(frame, centres, lm, pinch.down, status, redetected, source, dropped_centres)
-            if view is not None:
+            if view is not None:  # the panel's view: the whole frame (never cropped) with the live overlay drawn on it
                 view.hub.put(frame)
             if not args.no_window:
                 cv2.imshow("glasstouch", frame)
@@ -1488,6 +1990,8 @@ def run(args):
                 touch_sock.close()
             if overlay is not None:
                 stop_overlay(overlay)
+            if matcher is not None:
+                matcher.close()
             if view is not None:
                 view.close()
             src.release()
@@ -1515,6 +2019,9 @@ def parse_args(argv=None):
                    help="draw the markers in the screen corners instead of using printed ones")
     p.add_argument("--marker-size", type=marker_size, default=140, metavar="N",
                    help="overlay marker window size in points (default 140)")
+    p.add_argument("--markers-on-demand", action="store_true",
+                   help="with --show-markers: keep the markers hidden while the screen is found from what it shows, "
+                        "and show them only when it is lost (needs Screen Recording)")
     p.add_argument("--touch", action="store_true",
                    help="click where a sensor tap (imu_taps.py) meets a still fingertip on the screen; "
                         "hovering does not move the cursor and pinch clicking is off")
@@ -1522,7 +2029,13 @@ def parse_args(argv=None):
     p.add_argument("--touch-debug", action="store_true",
                    help="with --touch: print one line per tap (CLICK or the reason it was rejected)")
     p.add_argument("--camera-latency", type=float, default=0.3, metavar="S",
-                   help="seconds camera frames lag real time (default 0.3)")
+                   help="seconds camera frames lag real time when the stream has no capture times (default 0.3)")
+    p.add_argument("--link-latency", type=float, default=0.1, metavar="S",
+                   help="glasses-to-phone minimum delay left in the phone's capture times (default 0.1)")
+    p.add_argument("--no-content-match", action="store_true",
+                   help="find the screen from the markers only, not by matching a screenshot of it")
+    p.add_argument("--no-hand-crop", action="store_true",
+                   help="find the hand in the whole frame instead of a crop around the screen")
     p.add_argument("--tap-min-acc", type=float, default=TAP_MIN_ACC, metavar="G",
                    help="with --touch: reject taps whose accel change is below this, in g (default 0.003)")
     p.add_argument("--tap-max-acc", type=float, default=TAP_MAX_ACC, metavar="G",
@@ -1532,6 +2045,7 @@ def parse_args(argv=None):
     p.add_argument("--no-window", action="store_true",
                    help="no OpenCV window (the q key is then unavailable; stop with Ctrl-C)")
     p.add_argument("--overlay-child", type=int, help=argparse.SUPPRESS)  # internal: marker overlay process
+    p.add_argument("--overlay-hidden", action="store_true", help=argparse.SUPPRESS)  # internal: it starts invisible
     a = p.parse_args(argv)
     if not (a.make_markers or a.overlay_child is not None) and bool(a.source) == bool(a.region):
         p.error("give exactly one of --source or --region")
@@ -1545,7 +2059,7 @@ def main(argv=None):
     for sig in (signal.SIGTERM, signal.SIGHUP):  # terminate or closed Terminal -> KeyboardInterrupt, so finally releases the mouse
         signal.signal(sig, signal.default_int_handler)
     if a.overlay_child is not None:
-        overlay_child(a.overlay_child)
+        overlay_child(a.overlay_child, a.overlay_hidden)
         return
     if a.make_markers:
         make_marker_sheet(a.make_markers)

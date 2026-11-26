@@ -5,9 +5,11 @@
 // can read them with OpenCV: cv2.VideoCapture("http://<phone-ip>:8080/").
 //
 
+import CoreMedia
 import Foundation
 import Network
 import UIKit
+import os
 
 final class FrameServer {
   private static let port = NWEndpoint.Port(rawValue: 8080)!
@@ -25,19 +27,24 @@ final class FrameServer {
   // All state below is only touched on `queue`.
   private let queue = DispatchQueue(label: "FrameServer")
   private var listener: NWListener?
-  private var clients: [ObjectIdentifier: Client] = [:]
+  private var clients: [ObjectIdentifier: Client] = [:] {
+    didSet { clientCount.withLock { $0 = clients.count } }
+  }
+  // Mirrors clients.count so other threads can check it without hopping to `queue`.
+  private let clientCount = OSAllocatedUnfairLock<Int>(initialState: 0)
+  var hasClients: Bool { clientCount.withLock { $0 > 0 } }
 
   // One listener per process: a second NWListener cannot bind port 8080.
   static let shared = FrameServer()
   private init() {}
 
   func start() {
-    queue.async {
+    queue.async { [self] in
       guard self.listener == nil else { return }
       do {
         let listener = try NWListener(using: .tcp, on: FrameServer.port)
-        listener.newConnectionHandler = { [weak self] connection in
-          self?.accept(connection)
+        listener.newConnectionHandler = { [self] connection in
+          self.accept(connection)
         }
         listener.stateUpdateHandler = { [weak self] state in
           guard case .failed(let error) = state else { return }
@@ -65,18 +72,32 @@ final class FrameServer {
   }
 
   /// JPEG-encodes the frame once and sends it to every client that is ready for it.
-  func publish(_ image: UIImage) {
+  /// captureTime (Unix seconds) goes out as X-Capture-Time so the Mac can line frames up with taps.
+  func publish(_ image: UIImage, captureTime: Double) {
     queue.async {
       guard !self.clients.isEmpty, let jpeg = image.jpegData(compressionQuality: 0.85) else { return }
-      let frame = Data("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpeg.count)\r\n\r\n".utf8)
-        + jpeg + Data("\r\n".utf8)
-      for client in self.clients.values where !client.busy {
-        self.send(frame, to: client)
-      }
+      self.broadcast(jpeg, captureTime: captureTime, extraHeader: "")
+    }
+  }
+
+  /// Same as publish(_:captureTime:) for frames that are already JPEG (the phone camera).
+  func publish(jpeg: Data, captureTime: Double) {
+    queue.async {
+      guard !self.clients.isEmpty else { return }
+      self.broadcast(jpeg, captureTime: captureTime, extraHeader: "X-Capture-Source: phone-camera\r\n")
     }
   }
 
   // MARK: - Private (queue only)
+
+  private func broadcast(_ jpeg: Data, captureTime: Double, extraHeader: String) {
+    let head = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpeg.count)\r\n"
+      + String(format: "X-Capture-Time: %.3f\r\n", captureTime) + extraHeader + "\r\n"
+    let frame = Data(head.utf8) + jpeg + Data("\r\n".utf8)
+    for client in clients.values where !client.busy {
+      send(frame, to: client)
+    }
+  }
 
   private func accept(_ connection: NWConnection) {
     let client = Client(connection)
@@ -141,5 +162,26 @@ final class FrameServer {
       return result == 0 ? String(cString: host) : nil
     }
     return nil
+  }
+}
+
+/// Wall-clock capture times for frames from their presentation timestamps (the glasses' own clock).
+/// Bluetooth delivers frames in bursts, so arrival time is a poor clock. The offset is the smallest
+/// (arrival - pts) seen: pts + offset is when a frame would have arrived without being held in a burst
+/// (its capture time plus the link's minimum latency, which the Mac subtracts).
+final class CaptureClock: @unchecked Sendable {
+  private let offset = OSAllocatedUnfairLock<Double?>(uncheckedState: nil)
+
+  func wallTime(of buffer: CMSampleBuffer) -> Double {
+    let now = Date().timeIntervalSince1970
+    let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer))
+    guard pts.isFinite else { return now }
+    return offset.withLockUnchecked { stored in
+      let d = now - pts
+      var o = min((stored ?? d) + 0.0005, d)  // creeps up slowly, so clock drift cannot pin it
+      if d - o > 5 { o = d }  // the pts clock restarted (new session): start over
+      stored = o
+      return pts + o
+    }
   }
 }

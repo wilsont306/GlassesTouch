@@ -27,11 +27,14 @@ struct MainAppView: View {
   }
 
   var body: some View {
-    if viewModel.registrationState == .registered || viewModel.hasMockDevice {
-      StreamSessionView(wearables: wearables, wearablesVM: viewModel)
-    } else {
-      // User not registered - show registration/onboarding flow
-      HomeScreenView(viewModel: viewModel)
+    Group {
+      if viewModel.registrationState == .registered || viewModel.hasMockDevice {
+        StreamSessionView(wearables: wearables, wearablesVM: viewModel)
+      } else {
+        // User not registered - show registration/onboarding flow
+        HomeScreenView(viewModel: viewModel)
+      }
     }
+    .preferredColorScheme(.dark)
   }
 }

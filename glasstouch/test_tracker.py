@@ -1,4 +1,5 @@
 """Camera-free, mouse-free tests for tracker.py. Run: .venv/bin/python test_tracker.py"""
+import math
 import socket
 import time
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
+import tracker
 from imu_taps import TapDetector, tap_datagram, tap_features
 from tracker import (ARUCO_DICT, GESTURE_MAX, SCROLL_GAIN, TOUCH_SETTLE, TRUST_FRAC, GestureEngine,
                      ViewServer, pointing_hand, typing_flag, drop_occluded, fit_markers, overlay_fix, _side,
@@ -462,8 +464,8 @@ def test_touch_point_settle_and_window():
     for t in (tap - 0.13, tap + 0.13):  # just outside the window: not counted
         fu.add_fingertip(t, 900, 600, True)
     fu.add_tap(tap)
-    assert fu.poll(tap + 0.2) == [] and len(fu.taps) == 1  # not decided before TOUCH_SETTLE
-    clicks = fu.poll(tap + 0.3)
+    assert fu.poll(tap + TOUCH_SETTLE - 0.01) == [] and len(fu.taps) == 1  # not decided before TOUCH_SETTLE
+    clicks = fu.poll(tap + TOUCH_SETTLE + 1e-6)
     assert len(clicks) == 1 and np.hypot(clicks[0][0] - 500, clicks[0][1] - 300) < 1, clicks
     assert fu.decisions[0]["n"] == 5 and fu.decisions[0]["point"] == (500.0, 300.0), fu.decisions[0]
 
@@ -617,12 +619,12 @@ def test_touch_decisions_per_reason():
     assert fu.decisions[1]["peak"] is None and "peak=-" in format_decision(fu.decisions[1])
 
 
-def _frames(t_from, t_to, pos, on=lambda t: True, two=False):
-    """Camera frames at 15 fps, capture times from t_from to t_to: ("frame", t, (x, y), on, two)."""
+def _frames(t_from, t_to, pos, on=lambda t: True, two=False, span=None):
+    """Camera frames at 15 fps, capture times from t_from to t_to: ("frame", t, (x, y), on, two, hand size or None)."""
     out, k = [], round(t_from * 15)
     while k / 15 <= t_to + 1e-9:
         t = round(k / 15, 6)
-        out.append(("frame", t, pos(t), on(t), two))
+        out.append(("frame", t, pos(t), on(t), two, span(t) if span else None))
         k += 1
     return out
 
@@ -652,22 +654,25 @@ def _drive(events):
             acts = eng.tick(ev[1])
             t = ev[1]
         else:
-            _, t, tip, on, two = ev
-            acts = touch_step(eng, fuser, t, None if tip is None else tip, on, two)
+            _, t, tip, on, two, *rest = ev
+            acts = touch_step(eng, fuser, t, None if tip is None else tip, on, two, rest[0] if rest else None)
         out += [(t, a) for a in acts]
     return out, eng
 
 
-def _swipe(dist=200.0, t0=0.1):
-    """Finger rests at (500, 300); 50 ms after the tap it moves 300 pt/s until `dist` points, then rests."""
-    return lambda t: (500.0 + min(300.0 * max(t - t0 - 0.05, 0.0), dist), 300.0)
+def _swipe(dist=200.0, t0=0.1, speed=600.0):
+    """Finger rests at (500, 300); 50 ms after the tap it moves `speed` pt/s (live drags: 500-1000) until `dist`
+    points, then rests."""
+    return lambda t: (500.0 + min(speed * max(t - t0 - 0.05, 0.0), dist), 300.0)
 
 
-def _slow(slow_end, t0=0.1):
-    """Fast start (36 pt), then 15 pt/s until capture time slow_end, then rests."""
+def _slow(slow_end, t0=0.1, hold=0.35):
+    """Rests `hold` s after the touch (a drag rests before it slides; moving at once is lift-off), then a fast start
+    (72 pt, past GESTURE_DRAG_MOVE), then a steady 450 pt/s (above GESTURE_LIFT_SPEED: still dragging) until capture
+    time slow_end, then rests (a pause: the drop)."""
     def pos(t):
-        s_ = max(min(t - t0 - 0.05, slow_end - t0 - 0.05), 0.0)
-        return (500.0 + 300.0 * min(s_, 0.12) + 15.0 * max(s_ - 0.12, 0.0), 300.0)
+        s_ = max(min(t - t0 - hold, slow_end - t0 - hold), 0.0)
+        return (500.0 + 600.0 * min(s_, 0.12) + 450.0 * max(s_ - 0.12, 0.0), 300.0)
     return pos
 
 
@@ -690,26 +695,42 @@ def test_gesture_400_still_taps_one_click_each():
     assert good >= 396, good
 
 
-def test_gesture_double_tap_drag_down_moves_one_up():
-    # tap (a click at once), then a second touch 0.45 s later that moves 200 pt: down at the touch point, moves, one up
-    timed, eng = _drive(_with_tap(_frames(0.0, 2.6, _swipe(t0=1.45)), 1.0, 1.45))
+def test_gesture_hold_drag_down_moves_one_up():
+    # a tap (a click at once) whose finger rests 0.35 s, then slides 400 pt: down at the tap point, moves, one up
+    timed, eng = _drive(_with_tap(_frames(0.0, 3.0, _swipe(t0=1.75, dist=400.0)), 1.45))
     kinds = [a[0] for _, a in timed]
     assert kinds[:2] == ["click", "down"] and kinds.count("up") == 1 and kinds[-1] == "up", kinds
-    assert kinds.count("move") > 10 and "scroll" not in kinds and kinds.count("click") == 1, kinds
-    assert timed[0] == (_accepted_at(1.0), ("click", 500.0, 300.0)), timed[0]
-    assert timed[1][0] == _accepted_at(1.45) and timed[1][1][0] == "down", timed[1]
+    assert kinds.count("move") > 6 and "scroll" not in kinds and kinds.count("click") == 1, kinds
+    assert timed[0] == (_accepted_at(1.45), ("click", 500.0, 300.0)), timed[0]  # the tap clicks at once
+    assert timed[1][0] >= _accepted_at(1.45) and timed[1][1][0] == "down", timed[1]  # once it starts sliding
     assert abs(timed[1][1][1] - 500) < 1 and abs(timed[1][1][2] - 300) < 1, timed[1]  # the second touch's point
     t_up = next(t for t, a in timed if a[0] == "up")
-    assert 2.1 <= t_up <= 2.7, t_up  # the finger rests at 2.17 s; lift-off once the average speed drops
+    assert 2.47 <= t_up <= 3.0, t_up  # the finger stops at 2.47 s: the backup stop rule drops it ~0.45 s later
     assert not eng.held
 
 
-def test_gesture_double_tap_drag_even_if_pose_reads_two_fingers():
-    # live bug: the two-finger check said yes during a one-finger double-tap drag, and it scrolled instead
-    timed, eng = _drive(_with_tap(_frames(0.0, 2.6, _swipe(t0=1.45), two=True), 1.0, 1.45))
+def test_gesture_short_hold_drags():
+    # user: the hold felt long. Resting ~0.22 s (past GESTURE_HOLD 0.15) then sliding is a drag; with the old 0.3 s
+    # hold the slide came inside the hold and read as lift-off (the click only)
+    timed, eng = _drive(_with_tap(_frames(0.0, 3.0, _swipe(t0=1.45 + 0.17, dist=400.0)), 1.45))
     kinds = [a[0] for _, a in timed]
-    assert "scroll" not in kinds and "point" not in kinds, kinds
-    assert kinds.count("down") == 1 and kinds.count("up") == 1 and kinds.count("move") > 10, kinds
+    assert kinds[:2] == ["click", "down"] and kinds.count("up") == 1 and kinds.count("click") == 1, kinds
+    assert not eng.held
+
+
+def test_gesture_double_tap_lift_off_is_a_double_click():
+    # live: after the 2nd tap the finger leaves at once (20-50 pt per frame) and that read as a drag; moving within
+    # GESTURE_LIFTOFF of the touch is lift-off: a double-click at the first tap's spot, nothing held
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.2, _swipe(t0=1.45 - 0.04)), 1.0, 1.45))
+    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("dclick", 500.0, 300.0)], timed
+    assert not eng.held
+
+
+def test_gesture_double_tap_wobble_is_not_a_drag():
+    # live: after a resting 2nd tap the hovering hand wobbled 25-40 pt around the touch point: a double-click, no down
+    wobble = lambda t: (500.0, 300.0) if t < 1.75 else (500.0 - 30.0 * math.sin(9 * (t - 1.75)), 300.0 + 25.0 * math.sin(7 * (t - 1.75)))
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.6, wobble), 1.0, 1.45))
+    assert [a[0] for _, a in timed] == ["click", "dclick"], timed
     assert not eng.held
 
 
@@ -718,7 +739,8 @@ def test_gesture_double_tap_still_is_two_clicks():
     # tap's window closes (macOS only counts clicks at nearly the same point), and no down
     timed, eng = _drive(_with_tap(_frames(0.0, 2.2, lambda t: (500.0, 300.0)), 1.0, 1.45))
     assert [a for _, a in timed] == [("click", 500.0, 300.0), ("dclick", 500.0, 300.0)], timed
-    assert [t for t, _ in timed] == [_accepted_at(1.0), _accepted_at(1.45)], timed
+    assert timed[0][0] == _accepted_at(1.0), timed
+    assert timed[1][0] == _accepted_at(1.45), timed  # the double-click goes out as soon as the 2nd tap is accepted
     assert not eng.held and eng.state is None
     # live: the 2nd tap landed 50-80 pt off the first: still a double-click, at the first spot
     pos = lambda t: (500.0, 300.0) if t < 1.3 else (560.0, 350.0)
@@ -734,13 +756,13 @@ def test_gesture_taps_one_second_apart_are_two_clicks():
     timed, eng = _drive(_with_tap(_frames(0.0, 3.0, lambda t: (500.0, 300.0)), 1.0, 2.0))
     assert [a[0] for _, a in timed] == ["click", "click"], timed
     assert [t for t, _ in timed] == [_accepted_at(1.0), _accepted_at(2.0)], timed
-    assert not eng.held and eng.state is None
+    assert not eng.held and eng.state in (None, "hold"), eng.state  # "hold": still watching for a slide, no button
 
 
 def test_gesture_two_finger_scroll_ends_when_pose_lost():
     # two fingers swipe, then at 1.0 s the two-finger pose is lost while the hand keeps moving: scrolling stops
-    frames = _frames(0.0, 2.0, lambda t: (500.0 + 300.0 * max(t - 0.15, 0.0), 300.0), two=True)
-    frames = [("frame", t, tip, on, two and t < 1.0) for _, t, tip, on, two in frames]
+    frames = _frames(0.0, 2.0, lambda t: (500.0 + 600.0 * max(t - 0.15, 0.0), 300.0), two=True)
+    frames = [("frame", t, tip, on, two and t < 1.0, sp) for _, t, tip, on, two, sp in frames]
     timed, eng = _drive(_with_tap(frames, 0.1))
     kinds = {a[0] for _, a in timed}
     assert kinds <= {"point", "scroll"} and "scroll" in kinds, kinds  # no click, down or up
@@ -758,14 +780,36 @@ def test_gesture_tap_then_withdrawal_is_one_click():
     assert not eng.held
 
 
-def test_gesture_slow_drag_stays_held_while_moving():
-    timed, _ = _drive(_with_tap(_frames(0.0, 3.2, _slow(2.6, t0=0.6)), 0.1, 0.6))  # tap, then a second touch: a press
+def test_gesture_drag_stays_held_while_moving():
+    timed, _ = _drive(_with_tap(_frames(0.0, 3.2, _slow(2.6, t0=0.3)), 0.3))  # tap, then a second touch: a press
     kinds_t = [(t, a[0]) for t, a in timed]
     assert [k for _, k in kinds_t].count("up") == 1, kinds_t
     assert not [t for t, k in kinds_t if k == "up" and t < 2.6], "released while still moving"
-    assert sum(1 for t, k in kinds_t if k == "move" and 1.2 <= t <= 2.5) > 10, "no moves during the slow drag"
+    assert sum(1 for t, k in kinds_t if k == "move" and 1.2 <= t <= 2.5) > 10, "no moves during the drag"
     t_up = next(t for t, k in kinds_t if k == "up")
-    assert 2.6 <= t_up <= 3.0, t_up  # the finger rests at 2.6 s; the average speed drops below 12 pt/s soon after
+    assert 2.6 <= t_up <= 3.15, t_up  # the finger stops at 2.6 s; no size data, so the backup stop rule (0.45 s)
+
+
+def test_gesture_drag_drops_at_pause_before_pull_away():
+    # live: drags ended with a 1-3 frame pause, then the finger's pull-away jumped 50-80 pt and kept dragging.
+    # Now the pause drops it: one up, at the pause point, and nothing moves after it
+    def path(t):
+        if t < 0.95:
+            return (500.0, 300.0)                      # 2nd touch at 0.6 s, rests on the glass
+        if t < 1.6:
+            return (500.0 + 800.0 * (t - 0.95), 300.0)  # drags right at 800 pt/s (~53 pt per frame)
+        if t < 1.75:
+            return (1100.0, 300.0)                     # a short pause at the drop point
+        return (1100.0 + 900.0 * (t - 1.75), 300.0 - 600.0 * (t - 1.75))  # pull-away
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.4, path, span=lambda t: 500.0 * (1 + 4 * max(t - 1.75, 0.0))), 0.6))
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("down") == 1 and kinds.count("up") == 1, kinds
+    i_up = kinds.index("up")
+    assert "move" not in kinds[i_up:], kinds  # nothing follows the pull-away
+    up = timed[i_up][1]
+    assert abs(up[1] - 1100) < 50 and abs(up[2] - 300) < 30, up  # dropped where the finger paused (one pull-away
+    # frame can slip in before the size check sees two frames)
+    assert not eng.held
 
 
 def test_gesture_two_finger_swipe_scrolls_no_button():
@@ -781,8 +825,80 @@ def test_gesture_two_finger_swipe_scrolls_no_button():
     assert abs(sum(rest)) <= 1, rest  # at most the sub-deadband residual of the swipe; jitter itself scrolls nothing
 
 
+def test_gesture_scroll_with_sideways_jitter_stays_vertical():
+    # live: the fingertip jumps 30-150 pt between frames; a stroke up whose first frame also jumped 40 pt sideways
+    # locked the whole scroll sideways (16 of 21 scrolls in one session)
+    def path(t):
+        if t < 0.15:
+            return (500.0, 300.0)
+        return (540.0, 300.0 - 700.0 * (t - 0.15))  # 40 pt sideways jump, then straight up
+    timed, eng = _drive(_with_tap(_frames(0.0, 0.8, path, two=True), 0.1))
+    sc = [a for _, a in timed if a[0] == "scroll"]
+    assert sc and all(a[1] == 0 for a in sc), sc  # never sideways
+    assert sum(a[2] for a in sc) < -20, sc  # up stroke: content follows it
+    assert any("vertical" in n for n in eng.notes), eng.notes
+
+
+def test_gesture_scroll_survives_hand_size_noise():
+    # live: 15 of 21 scrolls ended after 1-8 steps on "hand grew x1.13-1.48"; real lifts grow < 8 %
+    def path(t):
+        return (500.0, 300.0) if t < 0.15 else (500.0, 300.0 - 700.0 * (t - 0.15))
+    timed, eng = _drive(_with_tap(_frames(0.0, 0.85, path, two=True, span=lambda t: 650.0 if t > 0.4 else 500.0), 0.1))
+    total = -sum(a[2] for _, a in timed if a[0] == "scroll")
+    assert total >= 0.8 * 700.0 * 0.65 * SCROLL_GAIN, total  # the whole stroke scrolled, not cut at the size jump
+    assert not any("hand grew" in n for n in eng.notes), eng.notes
+
+
+def test_marker_toggle_shows_when_lost_hides_when_content_holds():
+    probes = []
+    def probe(ok):
+        def f():
+            probes.append(ok)
+            return ok
+        return f
+    def run(tg, t, secs, source, ok):  # frames at 15 fps for `secs` s; returns (end time, [(t, action)])
+        out, end = [], t + secs
+        while t < end:
+            t = round(t + 1 / 15, 6)
+            out.append((t, tg.step(t, source, probe(ok))))
+        return t, [(tt, a) for tt, a in out if a]
+    tg = tracker.MarkerToggle(0.0)
+    t, acts = run(tg, 0.0, 2.0, "content", True)  # found from content: the markers stay hidden
+    assert not acts and not tg.shown and not probes, acts
+    t_lost = t
+    t, acts = run(tg, t, 1.0, "tracking", False)  # lost: shown once, about MARKER_SHOW_AFTER later
+    assert [a for _, a in acts] == ["show"] and tg.shown, acts
+    assert tracker.MARKER_SHOW_AFTER < acts[0][0] - t_lost <= tracker.MARKER_SHOW_AFTER + 0.1, acts
+    t1 = t
+    t, acts = run(tg, t, 10.0, "markers", False)  # a plain page: content alone can't find it, the markers stay
+    assert not acts and tg.shown, acts
+    assert len(probes) <= 10.0 / tracker.MARKER_PROBE_EVERY + 1, len(probes)  # checks are rationed
+    t2 = t
+    t, acts = run(tg, t, 2.6, "markers", True)  # content finds it, but one check fails partway: count restarts
+    t, acts2 = run(tg, t, tracker.MARKER_PROBE_EVERY + 0.1, "markers", False)  # long enough for a check to land in it
+    t3 = t
+    t, acts3 = run(tg, t, 5.0, "markers", True)
+    assert not acts and not acts2, (acts, acts2)
+    assert [a for _, a in acts3] == ["hide"] and not tg.shown, acts3
+    took = acts3[0][0] - t3
+    assert (tracker.MARKER_HIDE_AFTER - 1) * tracker.MARKER_PROBE_EVERY <= took <= (tracker.MARKER_HIDE_AFTER + 1) * \
+        tracker.MARKER_PROBE_EVERY, took
+
+
+def test_screen_matcher_ignores_marker_windows():
+    # with markers on screen, content matching must not lean on them (on-demand markers would hide, lose, show...)
+    rng = np.random.default_rng(3)
+    shot = cv2.cvtColor(cv2.GaussianBlur((rng.random((900, 1440)) * 255).astype(np.uint8), (3, 3), 0), cv2.COLOR_GRAY2BGR)
+    m = tracker.ScreenMatcher(1440, 900, grab=lambda: shot)
+    m.ignore = [np.float32([[0, 0], [300, 0], [300, 300], [0, 300]])]  # screen points
+    m._refresh(0.0)
+    assert m.pts is not None and len(m.pts) > 100, m.pts
+    inside = [(x, y) for x, y in m.pts if x < 300 and y < 300]
+    assert not inside, inside[:5]
+
+
 def test_gesture_stall_releases_held_drag():
-    timed, eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))  # frames stop at 1.0 s
+    timed, eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.3)), 0.3))  # frames stop at 1.0 s
     assert eng.held
     t = 1.0
     while t < 2.0:
@@ -793,42 +909,45 @@ def test_gesture_stall_releases_held_drag():
 
 
 def test_gesture_0p4s_frame_gap_keeps_drag():
-    ev = _with_tap(_frames(0.0, 0.8667, _slow(3.0, t0=0.6)), 0.1, 0.6)  # the press is accepted at 0.8667: a drag
-    ev += [("tick", round(0.8667 + k / 30, 6)) for k in range(1, 13)]  # 0.4 s with no frame, ticks as in run()
-    ev += _frames(1.2667, 2.5, _slow(3.0, t0=0.6))
+    ev = _with_tap(_frames(0.0, 1.0667, _slow(3.0, t0=0.3)), 0.3)  # rests, slides from 0.85: a drag by 1.0
+    ev += [("tick", round(1.0667 + k / 30, 6)) for k in range(1, 13)]  # 0.4 s with no frame, ticks as in run()
+    ev += _frames(1.4667, 2.7, _slow(3.0, t0=0.6))
     timed, eng = _drive(ev)
-    assert not [t for t, a in timed if a[0] == "up" and t < 2.5], "the gap released the drag"
-    assert eng.held and sum(1 for t, a in timed if a[0] == "move" and t > 1.2) > 5
+    assert [a[0] for t, a in timed if t < 1.07].count("down") == 1, timed  # the drag began before the gap
+    assert not [t for t, a in timed if a[0] == "up" and t < 2.7], "the gap released the drag"
+    assert eng.held and sum(1 for t, a in timed if a[0] == "move" and t > 1.4) > 5
 
 
 def test_gesture_forced_up_after_max():
-    timed, _ = _drive(_with_tap(_frames(0.0, 12.0, _slow(12.5, t0=0.6)), 0.1, 0.6))  # still moving: only the cap can end it
-    start = 0.8  # the first frame the press has moved GESTURE_MOVE: the drag, and so the cap, starts there
+    timed, _ = _drive(_with_tap(_frames(0.0, 12.0, _slow(12.5, t0=0.3)), 0.3))  # still moving: only the cap can end it
+    start = 0.8667  # the frame the held tap is confirmed sliding (two frames past GESTURE_DRAG_MOVE): the cap starts
     ups = [t for t, a in timed if a[0] == "up"]
     assert len(ups) == 1 and start + GESTURE_MAX - 1 / 15 <= ups[0] <= start + GESTURE_MAX + 0.2, (start, ups)
     assert timed[-1][1][0] == "up", timed[-3:]  # nothing after the forced release
 
 
 def test_gesture_lost_hand_lifts():
-    ev = _with_tap(_frames(0.0, 0.8, _slow(3.0, t0=0.6)), 0.1, 0.6)
-    ev += _frames(0.8667, 2.0, _slow(3.0, t0=0.6), on=lambda t: False)  # hand gone from 0.87 s
+    ev = _with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.3)), 0.3)  # rests, slides from 0.85: a drag by 1.0
+    ev += _frames(1.0667, 2.2, _slow(3.0, t0=0.6), on=lambda t: False)  # hand gone from 1.07 s
     timed, _ = _drive(ev)
     ups = [t for t, a in timed if a[0] == "up"]
-    assert len(ups) == 1 and 1.4 <= ups[0] <= 1.7, ups
+    assert len(ups) == 1 and 1.6 <= ups[0] <= 1.9, ups
 
 
-def test_gesture_new_touch_down_ends_drag_first():
-    path = _slow(2.0, t0=0.6)
-    ev = _with_tap(_frames(0.0, 2.3, path), 0.1, 0.6)
-    ev.append(("tap", 2.0))  # the second touch: accepted once frames to 2.25 s are in
-    ev += _frames(2.3667, 2.7, lambda t: path(2.0))  # it rests after the tap, so it is a click
-    timed, _ = _drive(ev)
-    acts = [a for _, a in timed]
-    i_up = next(i for i, a in enumerate(acts) if a[0] == "up")
-    assert acts.count(("up",) + acts[i_up][1:]) == 1 and i_up < len(acts) - 1, acts
-    assert acts[-1][0] == "click" and np.hypot(acts[-1][1] - path(2.0)[0], acts[-1][2] - 300) < 1, acts[-3:]
-    assert sum(1 for a in acts if a[0] == "up") == 1, acts
-
+def test_gesture_tap_while_dragging_is_ignored():
+    # live: pressing or sliding on the lid fired the tap sensor 0.1-0.35 s into a drag; that "tap" ended the drag,
+    # clicked, and near the first tap even double-clicked it. A tap while a drag is held changes nothing
+    path = _slow(2.0, t0=0.3)
+    ev = _with_tap(_frames(0.0, 1.0, path), 0.3)   # held, then sliding by ~0.9 s
+    ev.append(("tap", 0.98))                        # a sensor "tap" mid-drag, near the first tap
+    ev += _frames(1.0667, 2.6, path)
+    timed, eng = _drive(ev)
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("down") == 1 and kinds.count("up") == 1, kinds
+    i_down, i_up = kinds.index("down"), kinds.index("up")
+    assert not {"click", "dclick"} & set(kinds[i_down:]), kinds  # no click or double-click from it
+    assert timed[i_up][0] > 2.0, timed[i_up]  # the drag carried on to the finger's stop at 2.0 s
+    assert any("tap ignored" in n for n in eng.notes), eng.notes
 
 def test_release_touch_reaches_mouse_up_on_exception():
     import types
@@ -847,7 +966,7 @@ def test_release_touch_reaches_mouse_up_on_exception():
             raise fake.FailSafeException("parked on a corner")
     fake.mouseUp = mouse_up
     args = types.SimpleNamespace(dry_run=False, touch_debug=False)
-    eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))[1]  # a drag still held
+    eng = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.3)), 0.3))[1]  # a drag still held
     assert eng.held
     try:
         T.pyautogui = fake
@@ -862,7 +981,7 @@ def test_release_touch_reaches_mouse_up_on_exception():
         # the FailSafe path: the release action's mouseUp is parked, the retry in the finally releases
         T.perform_gestures = real_perform
         fake.ups, fake.fail_up, fake.FAILSAFE = 0, 2, True  # parked: the release action and the finally both raise
-        eng2 = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.6)), 0.1, 0.6))[1]
+        eng2 = _drive(_with_tap(_frames(0.0, 1.0, _slow(3.0, t0=0.3)), 0.3))[1]
         release_touch(eng2, args)
         assert fake.ups == 3 and fake.FAILSAFE is False, (fake.ups, fake.FAILSAFE)
     finally:
@@ -1136,15 +1255,23 @@ def test_typing_flag_over_keyboard():
     assert typing_flag([pointing, _hand_at(0.6, 0.5)], 0, 1000, 1000, M, False, 800) is True  # no fresh M
     assert typing_flag([pointing], 0, 1000, 1000, M, True, 800) is False  # one hand: nothing to check
     assert typing_flag([_hand_at(0.5, 1.2), _hand_at(0.6, 0.5)], 1, 1000, 1000, M, True, 800) is True  # 2nd is pointing
+    # a hand resting over the keyboard is not typing; one whose fingers move is
+    resting = _hand_at(0.5, 1.2)
+    still = tracker.other_hand_tips([pointing, resting], 0, 1000, 1000)
+    assert typing_flag([pointing, resting], 0, 1000, 1000, M, True, 800, prev_tips=still) is False
+    assert typing_flag([pointing, resting], 0, 1000, 1000, M, True, 800, prev_tips=still + [[3, 2]] * 4) is False  # jitter
+    moved = still.copy()
+    moved[0] += (0, 15)  # the index tip moved 15 px: a key press
+    assert typing_flag([pointing, resting], 0, 1000, 1000, M, True, 800, prev_tips=moved) is True
 
 
-def test_typing_gates_taps_in_window():
+def test_typing_is_logged_not_vetoed():
     fu = TouchFuser()
     _still_finger(fu, 500, 300, 0.0, 2.0)
     fu.add_tap(1.0, 3.5, {})
-    fu.add_typing(1.1, True)  # inside the tap window
+    fu.add_typing(1.1, True)  # inside the tap window: logged, but a still on-screen finger still clicks (no veto)
     fu.poll(1.5)
-    assert fu.decisions[0]["outcome"] == "typing" and fu.decisions[0]["typing"] is True
+    assert fu.decisions[0]["outcome"] == "CLICK" and fu.decisions[0]["typing"] is True
     assert "typing=1" in format_decision(fu.decisions[0])
     fu = TouchFuser()
     _still_finger(fu, 500, 300, 0.0, 2.0)
@@ -1198,6 +1325,274 @@ def test_view_server_mjpeg_and_host_check():
         view.close()
 
 
+def test_stamped_capture_time():
+    # frame stamped 0.2 s before it arrived, 0.1 s link latency left in the stamp: captured 0.3 s before arrival
+    assert abs(tracker.stamped_capture_time(100.0, 5000.2, 5000.0, 0.1) - 99.7) < 1e-9
+    assert tracker.stamped_capture_time(100.0, 5000.0, 5004.0, 0.1) is None   # stamp from the future: clocks off
+    assert tracker.stamped_capture_time(100.0, 5010.0, 5000.0, 0.1) is None   # 10 s old: clocks off
+
+
+def test_mjpeg_source_keeps_capture_time():
+    import http.server, threading
+    ok, jpg = cv2.imencode(".jpg", np.full((8, 8, 3), 200, np.uint8))
+    jpg = jpg.tobytes()
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.end_headers()
+            for extra in (b"X-Capture-Time: 1234.567\r\n", b"", b"X-Capture-Time: 99.5\r\nX-Capture-Source: phone-camera\r\n"):
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n" % len(jpg)
+                                 + extra + b"\r\n" + jpg + b"\r\n")
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.handle_request, daemon=True).start()
+    src = tracker.MjpegSource(f"http://127.0.0.1:{srv.server_port}/")
+    try:
+        ok, frame = src.read()
+        assert ok and frame.shape == (8, 8, 3) and abs(src.stamp - 1234.567) < 1e-9 and not src.exact  # glasses
+        ok, frame = src.read()
+        assert ok and src.stamp is None and not src.exact  # a frame without the header: no stamp, so the caller guesses
+        ok, frame = src.read()
+        assert ok and src.stamp == 99.5 and src.exact  # the phone's own camera: exact capture time
+        assert src.read() == (False, None)  # stream ended
+    finally:
+        src.release()
+        srv.server_close()
+
+
+def test_hand_crop_and_remap():
+    M = np.eye(3)  # camera px == screen points: the 100 x 50 screen sits at the frame's top left
+    box = tracker.hand_crop(M, 100, 50, 400, 300, None)
+    assert box == (0, 0, 130, 85), box  # margins: 30 % sideways, 20 % up (clipped), 70 % down
+    assert tracker.hand_crop(M @ np.array([[1, 0, -3], [0, 1, 0], [0, 0, 1.0]]), 100, 50, 400, 300, box) == box  # small move: kept
+    assert tracker.hand_crop(None, 100, 50, 400, 300, box) == box  # no M: keep the last box
+    from mediapipe.tasks.python.components.containers.landmark import NormalizedLandmark
+    hand = [NormalizedLandmark(x=0.5, y=0.5, z=0.0)]
+    tracker.remap_landmarks([hand], box, 400, 300)
+    assert abs(hand[0].x - 65 / 400) < 1e-9 and abs(hand[0].y - 42.5 / 300) < 1e-9
+
+
+
+def test_double_click_sets_click_state():
+    # live: pyautogui.doubleClick sent two clicks apps saw as singles; ours marks the second press as click 2. It is
+    # only the second press: the first tap already clicked (a whole 1,2 pair here made double-taps three presses)
+    import Quartz
+    posted, real_post = [], Quartz.CGEventPost
+    Quartz.CGEventPost = lambda tap, ev: posted.append(ev)  # capture instead of moving the real mouse
+    try:
+        tracker.double_click(300.0, 200.0)
+    finally:
+        Quartz.CGEventPost = real_post
+    kinds = [Quartz.CGEventGetType(e) for e in posted]
+    states = [Quartz.CGEventGetIntegerValueField(e, Quartz.kCGMouseEventClickState) for e in posted]
+    assert kinds == [Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp], kinds
+    assert states == [2, 2], states
+    assert all(tuple(Quartz.CGEventGetLocation(e)) == (300.0, 200.0) for e in posted)
+
+
+
+def _fake_desktop(W=1512, H=982, seed=3):
+    """A screen-like image: light background, window rectangles, title bars and lines of text."""
+    rng = np.random.default_rng(seed)
+    img = np.full((H, W, 3), 236, np.uint8)
+    for _ in range(9):
+        x, y = int(rng.integers(0, W - 400)), int(rng.integers(30, H - 300))
+        w, h = int(rng.integers(250, 600)), int(rng.integers(180, 400))
+        cv2.rectangle(img, (x, y), (x + w, y + h), [int(c) for c in rng.integers(150, 255, 3)], -1)
+        cv2.rectangle(img, (x, y), (x + w, y + 24), (60, 60, 60), -1)
+        for k in range(1, h // 28):
+            words = " ".join("".join(chr(97 + int(c)) for c in rng.integers(0, 26, int(rng.integers(2, 9)))) for _ in range(5))
+            cv2.putText(img, words, (x + 10, y + 24 + 24 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (30, 30, 30), 1)
+    return img
+
+
+def _camera_view(screen, dst, seed=1):
+    """The screen as the glasses see it: perspective into a 720x1280 frame, blur, contrast, a hand, JPEG."""
+    H, W = screen.shape[:2]
+    M = cv2.getPerspectiveTransform(np.float32([[0, 0], [W, 0], [W, H], [0, H]]), np.float32(dst))
+    cam = cv2.warpPerspective(screen, M, (720, 1280), dst=np.full((1280, 720, 3), 40, np.uint8),
+                              borderMode=cv2.BORDER_TRANSPARENT)
+    cam = cv2.convertScaleAbs(cv2.GaussianBlur(cam, (0, 0), 1.4), alpha=0.8, beta=25)
+    cv2.ellipse(cam, (420, 700), (110, 170), 20, 0, 360, (150, 180, 220), -1)
+    cam = cv2.imdecode(cv2.imencode(".jpg", cam, [cv2.IMWRITE_JPEG_QUALITY, 70])[1], cv2.IMREAD_GRAYSCALE)
+    return cam, M
+
+
+def test_screen_matcher_finds_screen_from_content():
+    screen = _fake_desktop()
+    H, W = screen.shape[:2]
+    grid = np.float32([[W * f, H * g] for f in (.2, .5, .8) for g in (.2, .5, .8)])
+    for view in ([[90, 420], [650, 380], [690, 760], [60, 800]],              # whole screen in view
+                 [[-200, 300], [1100, 260], [1150, 1000], [-250, 1050]]):     # close: only part of it in view
+        cam, Mtrue = _camera_view(screen, view)
+        m = tracker.ScreenMatcher(W, H, grab=lambda: screen)
+        M = m.match(cam, now=0.0)
+        assert M is not None, view
+        vis = cv2.perspectiveTransform(grid.reshape(-1, 1, 2), Mtrue).reshape(-1, 2)
+        inside = (vis[:, 0] >= 0) & (vis[:, 0] < 720) & (vis[:, 1] >= 0) & (vis[:, 1] < 1280)
+        err = np.abs(cv2.perspectiveTransform(vis[inside].reshape(-1, 1, 2), M).reshape(-1, 2) - grid[inside]).max()
+        print(f"  content match, {inside.sum()} of 9 grid points in view: worst error {err:.1f} pt")
+        assert err < 6, err
+    blank = np.full((H, W, 3), 236, np.uint8)  # nothing to match on: no guess
+    assert tracker.ScreenMatcher(W, H, grab=lambda: blank).match(_camera_view(blank, [[90, 420], [650, 380], [690, 760], [60, 800]])[0], 0.0) is None
+    # a screenshot at Retina scale (2x pixels) gives the same points
+    big = cv2.resize(screen, (2 * W, 2 * H), interpolation=cv2.INTER_NEAREST)
+    cam, Mtrue = _camera_view(screen, [[90, 420], [650, 380], [690, 760], [60, 800]])
+    M = tracker.ScreenMatcher(W, H, grab=lambda: big).match(cam, 0.0)
+    c = cv2.perspectiveTransform(np.float32([[[W / 2, H / 2]]]), Mtrue)
+    assert np.abs(cv2.perspectiveTransform(c, M).ravel() - (W / 2, H / 2)).max() < 6
+
+
+
+def test_picture_of_a_hand_on_screen_is_ignored():
+    # live: the tutorial's 3D hand on the screen was detected as a hand. Measured on the screen plane it is small
+    M = np.eye(3)  # camera px = screen points
+    def hand(x0, y0, span):  # wrist at (x0, y0), middle knuckle `span` px above it, in a 2000 x 2000 frame
+        return [SimpleNamespace(x=x0 / 2000, y=(y0 - (span if i == 9 else 0)) / 2000) for i in range(21)]
+    real, picture = hand(900, 1500, 480), hand(300, 400, 70)
+    assert tracker.real_hands([real, picture], M, 2000, 2000) == [0]
+    assert tracker.real_hands([picture], M, 2000, 2000) == []
+    assert tracker.real_hands([real, picture], None, 2000, 2000) == [0, 1]  # no screen fix: can't tell, keep both
+
+
+
+def test_gesture_drag_drops_at_jittery_stop():
+    # live: at the drop the fingertip still read 15-22 pt per frame (jitter, residual motion), then the pull-away
+    # (40-60 pt per frame) kept dragging. The stop is under GESTURE_LIFT_SPEED: one up there, nothing after
+    def path(t):
+        if t < 0.95:
+            return (500.0, 300.0)
+        if t < 1.6:
+            return (500.0 + 750.0 * (t - 0.95), 300.0)            # drags at ~50 pt per frame
+        if t < 1.8:
+            k = round((t - 1.6) * 15)
+            return (1062.0 + (8.0 if k % 2 else -8.0), 300.0)    # stopped, but jittering ~16 pt per frame
+        return (1062.0 + 800.0 * (t - 1.8), 300.0 - 500.0 * (t - 1.8))  # pull-away
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.4, path, span=lambda t: 500.0 * (1 + 4 * max(t - 1.8, 0.0))), 0.6))
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("up") == 1 and "move" not in kinds[kinds.index("up"):], kinds
+    up = timed[kinds.index("up")][1]
+    assert abs(up[1] - 1062) < 50, up  # dropped at the stop, not along the pull-away
+    assert not eng.held
+
+
+def test_gesture_scroll_ends_at_pause_before_return_stroke():
+    # live: a two-finger stroke, a short pause, then the fingers moving back through the air scrolled the page back
+    def path(t):
+        if t < 0.15:
+            return (500.0, 300.0)
+        if t < 0.65:
+            return (500.0, 300.0 - 700.0 * (t - 0.15))  # stroke up at ~47 pt per frame
+        if t < 0.95:
+            return (500.0, 300.0 - 350.0)               # pause
+        return (500.0, -50.0 + 700.0 * (t - 0.95))      # return stroke in the air, back down
+    timed, eng = _drive(_with_tap(_frames(0.0, 1.6, path, two=True, span=lambda t: 500.0 * (1 + 4 * max(t - 0.95, 0.0))), 0.1))
+    dys = [(t, a[2]) for t, a in timed if a[0] == "scroll"]
+    assert dys and all(dy <= 0 for _, dy in dys), dys  # only the stroke's direction: no scrolling back
+    assert max(t for t, _ in dys) <= 0.75, dys[-3:]   # nothing after the pause
+    assert eng.state is None and not eng.held
+
+
+
+def test_off_screen_placeholders_do_not_make_a_sweep():
+    # live: samples (912, 681), (921, 684) then two frames with no screen fix, stored as (0, 0) off screen: it was
+    # rejected as "sweeping span=1100". Only on-screen samples count toward the span
+    fu = TouchFuser()
+    for t, x, y, on in ((0.92, 912, 681, True), (0.98, 921, 684, True), (1.04, 0, 0, False), (1.1, 0, 0, False)):
+        fu.add_fingertip(t, x, y, on)
+    fu.add_tap(1.0)
+    assert len(fu.poll(1.5)) == 1, fu.decisions
+
+
+def test_gesture_double_tap_scattered_140pt_is_still_a_double_click():
+    # live: 2nd taps landed up to ~110 pt from the first (fingertip scatter); 100 pt made them two single clicks
+    pos = lambda t: (500.0, 300.0) if t < 1.3 else (520.0, 438.0)  # 139 pt away
+    timed, _ = _drive(_with_tap(_frames(0.0, 2.2, pos), 1.0, 1.45))
+    assert [a for _, a in timed] == [("click", 500.0, 300.0), ("dclick", 500.0, 300.0)], timed
+
+
+
+
+def test_gesture_held_too_long_then_moved_is_just_a_click():
+    # a tap that rests past GESTURE_HOLD_WAIT and only then moves stays its click: no drag
+    pos = lambda t: (500.0, 300.0) if t < 2.4 else (500.0 + 600.0 * (t - 2.4), 300.0)
+    timed, eng = _drive(_with_tap(_frames(0.0, 3.2, pos), 0.6))
+    assert [a[0] for _, a in timed] == ["click"], timed
+    assert not eng.held
+
+
+
+def test_gesture_drag_survives_slowing_down():
+    # live: drags "released too early when my hand doesn't even release": slowing down mid-drag isn't a lift
+    def path(t):
+        if t < 0.95:
+            return (500.0, 300.0)
+        if t < 1.4:
+            return (500.0 + 750.0 * (t - 0.95), 300.0)           # drags
+        if t < 1.65:
+            return (837.5 + 100.0 * (t - 1.4), 300.0)            # slows to 100 pt/s for 0.25 s, still on the glass
+        return (862.5 + 750.0 * (t - 1.65), 300.0)               # and carries on
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.0, path, span=lambda t: 500.0), 0.6))
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("down") == 1 and "up" not in kinds, kinds  # still held
+    assert sum(1 for t, a in timed if a[0] == "move" and t > 1.7) > 3, kinds  # and still moving after the slow part
+    assert eng.held
+
+
+def test_gesture_drag_released_when_the_hand_lifts():
+    # the finger keeps moving, but the hand grows (comes toward the eye): it lifted off, so the drag ends there
+    pos = lambda t: (500.0, 300.0) if t < 0.95 else (500.0 + 700.0 * (t - 0.95), 300.0)
+    size = lambda t: 500.0 if t < 1.5 else 500.0 * (1 + 3 * (t - 1.5))
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.2, pos, span=size), 0.6))
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("up") == 1 and "move" not in kinds[kinds.index("up"):], kinds
+    t_up = timed[kinds.index("up")][0]
+    assert 1.55 <= t_up <= 1.75, t_up  # within a few frames of the lift
+    assert not eng.held and any("hand grew" in n for n in eng.notes), eng.notes
+
+
+
+def test_gesture_scroll_strokes_only_scroll_one_way():
+    # live: scrolling with repeated strokes (stroke, lift, move back, stroke) scrolled back on every return stroke.
+    # A scroll keeps its first stroke's direction: return strokes do nothing, each forward stroke scrolls
+    def path(t):  # two fingers: 200 pt down at ~670 pt/s, back up, down again, back up
+        if t < 0.15:
+            return (500.0, 300.0)
+        k, u = divmod(t - 0.15, 0.3)
+        y = 200.0 * u / 0.3
+        return (500.0, 300.0 + (y if k % 2 == 0 else 200.0 - y))
+    timed, _ = _drive(_with_tap(_frames(0.0, 1.35, path, two=True), 0.1))
+    dys = [a[2] for _, a in timed if a[0] == "scroll"]
+    assert dys and all(dy >= 0 for dy in dys), dys  # never scrolled back
+    total = sum(dys)
+    assert abs(total - 2 * 200 * SCROLL_GAIN) <= 0.3 * 2 * 200 * SCROLL_GAIN, total  # both forward strokes counted
+
+
+
+def test_gesture_drag_dropped_when_it_turns_after_a_pause():
+    # live: drags stopped for a frame or two, then the pull-away (turning 53-179 deg) was dragged along. Hand size
+    # gave no signal (it stays within ~8 %). A pause followed by a sharp turn drops the drag at the pause
+    def path(t):
+        if t < 0.95:
+            return (500.0, 300.0)
+        if t < 1.45:
+            return (500.0 + 750.0 * (t - 0.95), 300.0)                    # drags right to x=875
+        if t < 1.55:
+            return (875.0, 300.0)                                         # a short stop
+        return (875.0 - 500.0 * (t - 1.55), 300.0 + 700.0 * (t - 1.55))  # pull-away: down and back (~125 deg)
+    timed, eng = _drive(_with_tap(_frames(0.0, 2.2, path, span=lambda t: 500.0), 0.6))
+    kinds = [a[0] for _, a in timed]
+    assert kinds.count("up") == 1 and "move" not in kinds[kinds.index("up"):], kinds
+    up = timed[kinds.index("up")][1]
+    assert abs(up[1] - 875) < 5 and abs(up[2] - 300) < 5, up  # dropped at the stop
+    assert any("turned" in n for n in eng.notes), [n for n in eng.notes if "size" not in n]
+
+
 if __name__ == "__main__":
     for t in (test_marker_homography_roundtrip, test_homography_custom_targets,
               test_overlay_corner_homography_two_markers, test_collinear_corners_rejected,
@@ -1225,14 +1620,24 @@ if __name__ == "__main__":
               test_decision_line_has_features_and_hands, test_pointing_hand_nearest_previous_tip,
               test_view_server_mjpeg_and_host_check,
               test_tap_strength_and_knock_gates, test_typing_flag_over_keyboard,
-              test_typing_gates_taps_in_window, test_tap_flags_validated,
-              test_gesture_400_still_taps_one_click_each, test_gesture_double_tap_drag_down_moves_one_up, test_gesture_double_tap_drag_even_if_pose_reads_two_fingers,
-              test_gesture_double_tap_still_is_two_clicks, test_gesture_taps_one_second_apart_are_two_clicks,
+              test_typing_is_logged_not_vetoed, test_tap_flags_validated,
+              test_gesture_400_still_taps_one_click_each, test_gesture_hold_drag_down_moves_one_up, test_gesture_short_hold_drags,
+              test_gesture_scroll_with_sideways_jitter_stays_vertical, test_gesture_scroll_survives_hand_size_noise,
+              test_marker_toggle_shows_when_lost_hides_when_content_holds, test_screen_matcher_ignores_marker_windows,
+              test_gesture_double_tap_still_is_two_clicks, test_gesture_double_tap_lift_off_is_a_double_click, test_gesture_double_tap_wobble_is_not_a_drag, test_gesture_taps_one_second_apart_are_two_clicks,
               test_gesture_two_finger_scroll_ends_when_pose_lost,
-              test_gesture_slow_drag_stays_held_while_moving, test_gesture_two_finger_swipe_scrolls_no_button,
+              test_gesture_drag_stays_held_while_moving, test_gesture_drag_drops_at_pause_before_pull_away, test_gesture_two_finger_swipe_scrolls_no_button,
               test_gesture_stall_releases_held_drag, test_gesture_0p4s_frame_gap_keeps_drag,
               test_gesture_forced_up_after_max, test_gesture_lost_hand_lifts,
-              test_gesture_new_touch_down_ends_drag_first, test_release_touch_reaches_mouse_up_on_exception):
+              test_gesture_tap_while_dragging_is_ignored, test_release_touch_reaches_mouse_up_on_exception,
+              test_stamped_capture_time, test_mjpeg_source_keeps_capture_time, test_hand_crop_and_remap,
+              test_double_click_sets_click_state, test_screen_matcher_finds_screen_from_content,
+              test_picture_of_a_hand_on_screen_is_ignored, test_gesture_drag_drops_at_jittery_stop,
+              test_gesture_scroll_ends_at_pause_before_return_stroke, test_off_screen_placeholders_do_not_make_a_sweep,
+              test_gesture_double_tap_scattered_140pt_is_still_a_double_click,
+              test_gesture_held_too_long_then_moved_is_just_a_click, test_gesture_drag_survives_slowing_down,
+              test_gesture_drag_released_when_the_hand_lifts, test_gesture_scroll_strokes_only_scroll_one_way,
+              test_gesture_drag_dropped_when_it_turns_after_a_pause):
         t()
         print(f"{t.__name__} ok")
     print("ALL OK")

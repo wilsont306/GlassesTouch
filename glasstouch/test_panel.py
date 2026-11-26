@@ -36,6 +36,8 @@ def test_source_validation():
         "http://phone.local:8080/": "http://phone.local:8080/",
         "  http://10.0.0.5/  ": "http://10.0.0.5:8080/",
         "HTTPS://phone.local:9000": "https://phone.local:9000/",
+        "camera:6C707041-05AC-0010-0001-000000000001": "camera:6C707041-05AC-0010-0001-000000000001",
+        " camera:0x14100000046d085b ": "camera:0x14100000046d085b",
     }
     for text, want in ok.items():
         assert panel.normalise_source(text) == want, (text, panel.normalise_source(text))
@@ -45,7 +47,8 @@ def test_source_validation():
            # inet_aton aliases: a numeric-looking host must be a real dotted quad
            "0x7f.1", "2130706433", "http://0x7f.1/", "http://2130706433/", "http://0x7f.0.0.1/",
            "http://127.0.0.1.5/", "0x7f",
-           "http://" + "a" * 3000 + "/"]
+           "http://" + "a" * 3000 + "/",
+           "camera:", "camera:a b", "camera:x;reboot", "camera:$(reboot)", "camera:" + "a" * 129, "CAMERA:1"]
     for text in bad:
         try:
             panel.normalise_source(text)
@@ -60,7 +63,9 @@ def test_argv():
     s = panel.parse_settings({"source": "10.0.0.5"})  # defaults: touch, markers, debug on; dry run off
     view = ["--view-port", "8767", "--no-window", "--tap-min-acc", "0.003"]  # 0.003: the panel's default strength
     assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", *view,
-                                   "--show-markers", "--touch", "--touch-debug"], panel.build_argv(s)
+                                   "--show-markers", "--touch", "--touch-debug", "--markers-on-demand"], panel.build_argv(s)
+    s = panel.parse_settings({"source": "10.0.0.5", "markers_on_demand": False})  # markers always on
+    assert "--show-markers" in panel.build_argv(s) and "--markers-on-demand" not in panel.build_argv(s)
     s = panel.parse_settings({"source": "http://phone.local:8080/", "touch": False, "show_markers": False,
                               "touch_debug": False, "dry_run": True})
     assert panel.build_argv(s) == [py, tr, "--source", "http://phone.local:8080/", *view, "--dry-run"], \
@@ -70,7 +75,8 @@ def test_argv():
     assert argv[argv.index("--tap-min-acc") + 1] == "0.006", argv
     s = panel.parse_settings({"source": "10.0.0.5", "dry_run": True, "marker_size": 200})
     assert panel.build_argv(s) == [py, tr, "--source", "http://10.0.0.5:8080/", *view, "--show-markers",
-                                   "--touch", "--touch-debug", "--dry-run", "--marker-size", "200"], panel.build_argv(s)
+                                   "--touch", "--touch-debug", "--dry-run", "--markers-on-demand", "--marker-size", "200"], \
+        panel.build_argv(s)
 
 
 def test_settings_ranges():
@@ -90,7 +96,7 @@ def test_settings_ranges():
         except ValueError:
             continue
         raise AssertionError(f"accepted tap_min_acc {n!r}")
-    for key in ("touch", "show_markers", "dry_run", "touch_debug"):
+    for key in ("touch", "show_markers", "markers_on_demand", "dry_run", "touch_debug"):
         for v in ("yes", 1, None):
             try:
                 panel.parse_settings({key: v})
@@ -172,6 +178,11 @@ def test_http():
         status, page = request(port, "GET", "/")
         assert status == 200 and "GlassesTouch" in page and token in page
         assert '"http://127.0.0.1:8767/"' in page  # the preview switches to the tracker's view while it runs
+        assert "__TOKEN__" not in page and "__CONFIG__" not in page and 'id="test-go"' in page  # panel.html, filled in
+        page_t = json.loads(request(port, "GET", "/status")[1])["page"]  # the open page reloads when this changes
+        assert page_t == os.stat(os.path.join(HERE, "panel.html")).st_mtime, page_t
+        status, cams = request(port, "GET", "/cameras")
+        assert status == 200 and isinstance(json.loads(cams), list), (status, cams)
 
         good = {"X-Panel-Token": token, "Content-Type": "application/json"}
         body = {"source": "10.0.0.5"}
@@ -205,6 +216,8 @@ def test_http():
         assert time.monotonic() - t0 < 3, "stop took longer than 3 s"
         assert st["tracker"]["state"] == "stopped" and st["tracker"]["exit_code"] == 0, st["tracker"]
         assert any("stub got SIGINT" in l for l in st["lines"]), st["lines"]
+        log = os.path.join(d, "tracker.log")  # beside the test's panel.json, never the real build/
+        assert "stub start" in open(log).read() and oct(os.stat(log).st_mode & 0o777) == "0o600", log
 
         # start again, then close the panel: the stub must not outlive it
         assert request(port, "POST", "/start", body, good)[0] == 200
@@ -261,11 +274,11 @@ time.sleep(600)
         listener.close()
 
 
-TEST_AREA_IDS = ("test-area", "t-a", "t-b", "t-c", "t-dbl", "n-a", "n-b", "n-c", "n-dbl", "field", "box", "n-drag",
-                 "drop", "list", "top", "strip", "last", "reset")
+TUTORIAL_IDS = ("tutorial", "tut-voice", "tut-skip", "tut-exit", "tut-n", "tut-h", "tut-hint", "tut-g", "hand3d", "tut-stage",
+                "test-go", "paired", "paired-go")
 
 
-def test_test_area_in_served_page():
+def test_tutorial_in_served_page():
     d = tempfile.mkdtemp(prefix="gt_panel_test_")
     proc, port, _ = start_panel(d)
     try:
@@ -274,13 +287,14 @@ def test_test_area_in_served_page():
         proc.send_signal(signal.SIGINT)
         stop_panel(proc)
     assert status == 200
-    for name in TEST_AREA_IDS:
+    assert 'id="test-area"' not in page  # the on-page touch test is gone; the full-screen tutorial replaces it
+    for name in TUTORIAL_IDS:
         assert f'id="{name}"' in page, name
     # no external resources: nothing loads from another host (the phone placeholder is text, not a load)
     assert not re.search(r"(src|href)\s*=\s*[\"']?https?:|url\(\s*[\"']?https?:|@import", page)
     script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
-    area = script[script.index("// Test area:"):script.index("showConfig(CONFIG);")]
-    assert not re.search(r"fetch\(|XMLHttpRequest|sendBeacon|TOKEN", area), "test area sends something"
+    area = script[script.index("// Tutorial:"):script.index("showConfig(CONFIG);")]
+    assert not re.search(r"fetch\(|XMLHttpRequest|sendBeacon|TOKEN", area), "tutorial sends something"
     path = os.path.join(d, "page_script.js")
     with open(path, "w") as f:
         f.write(script)
@@ -288,12 +302,130 @@ def test_test_area_in_served_page():
     assert r.returncode == 0, r.stderr
 
 
+def test_pairing():
+    """A phone that POSTs the QR's one-time code becomes the source (its own address); wrong, reused or late codes
+    change nothing, and the pairing listener closes."""
+    import threading
+    from urllib.parse import parse_qs, urlparse
+    d = tempfile.mkdtemp(prefix="gt_panel_test_")
+    os.environ["GLASSTOUCH_PANEL_CONFIG"] = os.path.join(d, "panel.json")
+    srv = panel.make_server(0, pair_host="127.0.0.1")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        link = srv.pairing.open()
+        q = {k: v[0] for k, v in parse_qs(urlparse(link).query).items()}
+        assert link.startswith("cameraaccess://glasstouch-pair?") and q["h"] == "127.0.0.1", link
+        port = int(q["p"])
+        assert request(port, "GET", "/")[0] == 404  # nothing but POST /pair on this listener
+        assert request(port, "POST", "/pair", {"code": "wrong"})[0] == 403
+        assert request(port, "POST", "/pair", {"code": 5})[0] == 400
+        assert srv.config["source"] == ""
+        status, text = request(port, "POST", "/pair", {"code": q["c"]})
+        assert status == 200 and json.loads(text)["ok"], text
+        assert srv.config["source"] == "http://127.0.0.1:8080/", srv.config
+        assert json.load(open(os.environ["GLASSTOUCH_PANEL_CONFIG"]))["source"] == "http://127.0.0.1:8080/"
+        st = srv.pairing.status()
+        assert not st["open"] and st["last"], st
+
+        def closed():
+            try:
+                return request(port, "POST", "/pair", {"code": q["c"]})[0] == 410  # still up for a moment: refused
+            except OSError:
+                return True
+        wait_for(closed, timeout=3)
+
+        link = srv.pairing.open()  # a late code is refused
+        q = {k: v[0] for k, v in parse_qs(urlparse(link).query).items()}
+        srv.pairing.expires = 0
+        assert request(int(q["p"]), "POST", "/pair", {"code": q["c"]})[0] == 410
+        srv.pairing.close()
+        assert qr_ok(link)
+    finally:
+        srv.pairing.close()
+        srv.shutdown()
+        srv.server_close()
+        del os.environ["GLASSTOUCH_PANEL_CONFIG"]
+
+
+def qr_ok(link):
+    """The panel's QR rows decode back to the link (OpenCV reads its own code, with the page's 4-module quiet zone)."""
+    import cv2
+    import numpy as np
+    rows = panel.qr_rows(link)
+    img = np.array([[0 if c == "1" else 255 for c in r] for r in rows], np.uint8)
+    img = cv2.copyMakeBorder(img, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=255)
+    img = cv2.resize(img, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
+    return cv2.QRCodeDetector().detectAndDecode(img)[0] == link
+
+
+def test_camera_format_pick():
+    """The opened camera moves to the most pixels up to 1920x1440 at 24 fps or more, landscape first."""
+    import maccam
+    iphone = [(1280, 720, 30), (1920, 1080, 60), (1920, 1440, 30), (1920, 1440, 60), (1440, 1920, 60)]  # live list
+    assert maccam.pick(iphone) == 3, maccam.pick(iphone)  # 4:3 at 60 fps, landscape over the same-size portrait
+    assert maccam.pick([(3840, 2160, 30), (1280, 720, 60)]) == 1  # 4K is over the cap
+    assert maccam.pick([(1920, 1080, 15), (1280, 720, 30)]) == 1  # too slow at 1080p
+    assert maccam.pick([(1920, 1080, 15)]) is None and maccam.pick([]) is None
+    assert maccam.size_of("<AVCaptureDeviceFormat: 'vide'/'420v' 1920x1080, { 1- 30 fps}>") == (1920, 1080)
+
+    class Rate:
+        def __init__(self, fps): self.fps = fps
+        def maxFrameRate(self): return self.fps
+
+    class Fmt:
+        def __init__(self, w, h, fps): self.text, self.fps = f"<'420v' {w}x{h}, {{ 1-{fps} fps}}>", fps
+        def __str__(self): return self.text
+        def videoSupportedFrameRateRanges(self): return [Rate(self.fps)]
+
+    class Cam:  # a camera whose lock answers the way PyObjC does: a bare bool here, (bool, error) with full metadata
+        def __init__(self, lock_answer): self.lock_answer, self.active = lock_answer, None
+        def formats(self): return [Fmt(640, 480, 30), Fmt(1920, 1080, 30), Fmt(3840, 2160, 30)]  # 4K over the cap
+        def lockForConfiguration_(self, _err): return self.lock_answer
+        def setActiveFormat_(self, f): self.active = str(f)
+
+    for answer in (True, (True, None)):
+        cam = Cam(answer)
+        assert maccam.use_best_format(cam) == (1920, 1080) and "1920x1080" in cam.active, (answer, cam.active)
+    for answer in (False, (False, "not authorized")):
+        cam = Cam(answer)
+        assert maccam.use_best_format(cam) is None and cam.active is None, answer
+
+
+def test_camera_source():
+    """A camera source starts the tracker on that camera's current OpenCV number, with the local-camera latency."""
+    cams = [{"id": "BUILTIN-1", "name": "MacBook Pro Camera"}, {"id": "PHONE-2", "name": "iPhone Camera"}]
+    real = panel.list_cameras
+    panel.list_cameras = lambda: cams
+    try:
+        argv = panel.build_argv(panel.parse_settings({"source": "camera:PHONE-2"}))
+        assert argv[2:4] == ["--source", "1"], argv
+        assert argv[argv.index("--camera-latency") + 1] == "0.1", argv
+        cams.pop(0)  # the built-in camera went away: the phone is number 0 now
+        assert panel.build_argv(panel.parse_settings({"source": "camera:PHONE-2"}))[3] == "0"
+        try:
+            panel.build_argv(panel.parse_settings({"source": "camera:BUILTIN-1"}))
+        except ValueError as e:
+            assert "isn't connected" in str(e)
+        else:
+            raise AssertionError("started on a camera that isn't connected")
+        assert "--camera-latency" not in panel.build_argv(panel.parse_settings({"source": "10.0.0.5"}))
+    finally:
+        panel.list_cameras = real
+    real_ids = [cam["id"] for cam in panel.list_cameras()]  # the real list (empty without cameras)
+    assert real_ids == sorted(real_ids), real_ids  # OpenCV's numbering: sorted by uniqueID (ASCII ids)
+    for uid in real_ids:  # ids the source pattern accepts
+        assert panel.normalise_source("camera:" + uid) == "camera:" + uid, uid
+
+
 if __name__ == "__main__":
     test_source_validation()
     test_argv()
+    test_camera_format_pick()
+    test_camera_source()
     test_settings_ranges()
     test_http()
     test_sighup_stops_tracker()
     test_orphan_watchdog()
-    test_test_area_in_served_page()
+    test_tutorial_in_served_page()
+    test_pairing()
     print("ALL OK")

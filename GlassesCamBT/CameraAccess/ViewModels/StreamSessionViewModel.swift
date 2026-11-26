@@ -119,9 +119,13 @@ class StreamSessionViewModel: ObservableObject {
     // Each VideoFrame carries a compressed HEVC sampleBuffer, which we decode to UIImage.
     let decoder = videoFrameDecoder
     let slot = latestFrame
+    let server = frameServer
+    let clock = CaptureClock()
     videoFrameListenerToken = streamSession.videoFramePublisher.listen { [weak self] videoFrame in
       // Decodes on this callback thread; the decoder serialises its own VideoToolbox work.
       guard let image = decoder.decode(videoFrame.sampleBuffer) else { return }
+      // Every frame goes to the Mac with its capture time; the preview below only needs the newest one.
+      server.publish(image, captureTime: clock.wallTime(of: videoFrame.sampleBuffer))
       // Keep only the newest frame. Schedule one main-thread delivery when the slot goes from empty to full.
       if slot.put(image) {
         DispatchQueue.main.async {
@@ -180,11 +184,10 @@ class StreamSessionViewModel: ObservableObject {
     await streamSession.start()
   }
 
-  /// Main-actor end of the frame pipeline: publishes the newest decoded frame to the preview and the MJPEG server.
+  /// Main-actor end of the preview: shows the newest decoded frame (the MJPEG server gets every frame directly).
   private func deliverLatestFrame() {
     guard let image = latestFrame.take() else { return }
     currentVideoFrame = image
-    frameServer.publish(image)
     hasReceivedFirstFrame = true
   }
 

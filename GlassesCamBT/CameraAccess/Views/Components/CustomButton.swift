@@ -26,18 +26,18 @@ struct CustomButton: View {
     var backgroundColor: Color {
       switch self {
       case .primary:
-        return .appPrimary
+        return .gtAccent
       case .destructive:
-        return .destructiveBackground
+        return .gtError.opacity(0.15)
       }
     }
 
     var foregroundColor: Color {
       switch self {
       case .primary:
-        return .white
+        return .gtAccentInk
       case .destructive:
-        return .destructiveForeground
+        return .gtError
       }
     }
   }
@@ -45,12 +45,11 @@ struct CustomButton: View {
   var body: some View {
     Button(action: action) {
       Text(title)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundColor(style.foregroundColor)
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(style.foregroundColor)
         .frame(maxWidth: .infinity)
-        .frame(height: 56)
-        .background(style.backgroundColor)
-        .cornerRadius(30)
+        .frame(height: 52)
+        .background(style.backgroundColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
     .disabled(isDisabled)
     .opacity(isDisabled ? 0.6 : 1.0)

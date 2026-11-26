@@ -33,9 +33,9 @@ struct CircleButton: View {
           .font(.system(size: 16))
       }
     }
-    .foregroundColor(.black)
+    .foregroundStyle(Color.gtText)
     .frame(width: 56, height: 56)
-    .background(.white)
-    .clipShape(Circle())
+    .background(Color.gtSurface, in: Circle())
+    .overlay(Circle().stroke(Color.gtLine, lineWidth: 1))
   }
 }

@@ -20,6 +20,7 @@ import SwiftUI
 struct StreamView: View {
   @ObservedObject var viewModel: StreamSessionViewModel
   @ObservedObject var wearablesVM: WearablesViewModel
+  @ObservedObject private var pairing = PairingModel.shared
 
   var body: some View {
     ZStack {
@@ -40,22 +41,31 @@ struct StreamView: View {
       } else {
         ProgressView()
           .scaleEffect(1.5)
-          .foregroundColor(.white)
+          .tint(Color.gtAccent)
       }
 
-      // Stream address for OpenCV clients on the same Wi-Fi
-      if let streamURL = viewModel.streamURL {
-        VStack {
-          Text(streamURL)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundColor(.white)
-            .textSelection(.enabled)
-            .padding(6)
-            .background(Color.black.opacity(0.5))
+      // Top overlay: live status, stream address for OpenCV clients on the same Wi-Fi, Mac link
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 8) {
+          StatusBadge(isLive: viewModel.hasReceivedFirstFrame)
           Spacer()
+          if let streamURL = viewModel.streamURL {
+            AddressChip(address: streamURL)
+          }
         }
-        .padding(.top, 8)
+        if case .linked(let mac) = pairing.state {
+          Text("Linked to \(mac)")
+            .font(.system(size: 12))
+            .foregroundStyle(Color.gtText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.gtSurface.opacity(0.85), in: Capsule())
+            .overlay(Capsule().stroke(Color.gtLine, lineWidth: 1))
+        }
+        Spacer()
       }
+      .padding(.horizontal, 16)
+      .padding(.top, 8)
 
       // Bottom controls layer
 
@@ -83,6 +93,26 @@ struct StreamView: View {
         )
       }
     }
+  }
+}
+
+// "LIVE" once the first frame arrives, "STARTING" before that
+struct StatusBadge: View {
+  let isLive: Bool
+
+  var body: some View {
+    let tint = isLive ? Color.gtLive : Color.gtAccent
+    HStack(spacing: 6) {
+      Circle()
+        .fill(tint)
+        .frame(width: 8, height: 8)
+      Text(isLive ? "LIVE" : "STARTING")
+        .font(.system(size: 12, weight: .bold, design: .monospaced))
+        .foregroundStyle(isLive ? Color.gtText : Color.gtAccent)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(Color.black.opacity(0.55), in: Capsule())
   }
 }
 

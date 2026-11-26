@@ -18,88 +18,84 @@ import SwiftUI
 
 struct HomeScreenView: View {
   @ObservedObject var viewModel: WearablesViewModel
+  @State private var showPhoneCamera = false
 
   var body: some View {
-    ZStack {
-      Color.white.edgesIgnoringSafeArea(.all)
+    let registering = viewModel.registrationState == .registering
 
-      VStack(spacing: 12) {
-        Spacer()
+    VStack(alignment: .leading, spacing: 24) {
+      Wordmark()
 
-        Image(.cameraAccessIcon)
-          .resizable()
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 120)
+      VStack(alignment: .leading, spacing: 12) {
+        Text("Touch your Mac screen.")
+          .font(.system(size: 28, weight: .semibold))
+          .foregroundStyle(Color.gtText)
+        Text("Ray-Ban Meta glasses watch your hand; your MacBook feels the tap.")
+          .font(.system(size: 16))
+          .foregroundStyle(Color.gtMuted)
+      }
 
-        VStack(spacing: 12) {
-          HomeTipItemView(
-            resource: .smartGlassesIcon,
-            title: "Video Capture",
-            text: "Record videos directly from your glasses, from your point of view."
-          )
-          HomeTipItemView(
-            resource: .soundIcon,
-            title: "Open-Ear Audio",
-            text: "Hear notifications while keeping your ears open to the world around you."
-          )
-          HomeTipItemView(
-            resource: .walkingIcon,
-            title: "Enjoy On-the-Go",
-            text: "Stay hands-free while you move through your day. Move freely, stay connected."
-          )
+      VStack(alignment: .leading, spacing: 16) {
+        HomeStep(number: 1, icon: "eyeglasses", text: "Connect your glasses")
+        HomeStep(number: 2, icon: "qrcode.viewfinder", text: "Scan the code in the Mac panel with the Camera app")
+        HomeStep(number: 3, icon: "hand.tap", text: "Start streaming and touch the screen")
+      }
+      .padding(20)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .gtCard()
+
+      Spacer()
+
+      VStack(spacing: 16) {
+        Text("Opens the Meta AI app to confirm.")
+          .font(.footnote)
+          .foregroundStyle(Color.gtMuted)
+
+        Button("Use this phone's camera instead") {
+          showPhoneCamera = true
         }
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(Color.gtText)
+        .frame(maxWidth: .infinity)
 
-        Spacer()
-
-        VStack(spacing: 20) {
-          Text("You'll be redirected to the Meta AI app to confirm your connection.")
-            .font(.system(size: 14))
-            .foregroundColor(.gray)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-
-          CustomButton(
-            title: viewModel.registrationState == .registering ? "Connecting..." : "Connect my glasses",
-            style: .primary,
-            isDisabled: viewModel.registrationState == .registering
-          ) {
-            viewModel.connectGlasses()
-          }
+        CustomButton(
+          title: registering ? "Connecting…" : "Connect glasses",
+          style: .primary,
+          isDisabled: registering
+        ) {
+          viewModel.connectGlasses()
         }
       }
-      .padding(.all, 24)
+    }
+    .padding(24)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(Color.gtBg.ignoresSafeArea())
+    .fullScreenCover(isPresented: $showPhoneCamera) {
+      PhoneCameraView()
     }
   }
-
 }
 
-struct HomeTipItemView: View {
-  let resource: ImageResource
-  let title: String
+private struct HomeStep: View {
+  let number: Int
+  let icon: String
   let text: String
 
   var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      Image(resource)
-        .resizable()
-        .renderingMode(.template)
-        .foregroundColor(.black)
-        .aspectRatio(contentMode: .fit)
+    HStack(spacing: 14) {
+      Text("\(number)")
+        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+        .foregroundStyle(Color.gtAccentInk)
+        .frame(width: 26, height: 26)
+        .background(Color.gtAccent, in: Circle())
+      Image(systemName: icon)
+        .font(.system(size: 18))
+        .foregroundStyle(Color.gtMuted)
         .frame(width: 24)
-        .padding(.leading, 4)
-        .padding(.top, 4)
-
-      VStack(alignment: .leading, spacing: 6) {
-        Text(title)
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundColor(.black)
-
-        Text(text)
-          .font(.system(size: 15))
-          .foregroundColor(.gray)
-      }
-      Spacer()
+      Text(text)
+        .font(.system(size: 16))
+        .foregroundStyle(Color.gtText)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 }

@@ -25,6 +25,8 @@ struct RegistrationView: View {
       // Handle callback URLs from the Meta mobile app
       // This is essential for completing DAT SDK registration and permission flows
       .onOpenURL { url in
+        // GlassesTouch pairing link from the Mac's QR code
+        if PairingModel.shared.handle(url) { return }
         guard
           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           // Check if this URL is related to DAT SDK workflows (contains metaWearablesAction query param)

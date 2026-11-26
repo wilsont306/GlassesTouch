@@ -1,0 +1,1258 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlassesTouch</title>
+<style>
+/* Hallmark · macrostructure: Workbench · genre: modern-minimal · tone: technical instrument · anchor hue: neutral ink
+ * theme: custom (vibe: "camera viewfinder on a cutting mat") · paper oklch(97.5% 0.006 85) · ink oklch(21% 0.01 260)
+ * fonts: Avenir Next (display) + system UI (body) + SF Mono (data) · axes: light / geometric-sans / neutral
+ * nav: N1a-variant (wordmark + one action; a control panel has one destination) · footer: none (tool page)
+ */
+:root { color-scheme: light;
+  --color-paper: oklch(97.5% 0.006 85); --color-paper-2: oklch(94.5% 0.008 85); --color-surface: oklch(99.3% 0.003 85);
+  --color-ink: oklch(21% 0.01 260); --color-ink-2: oklch(44% 0.012 260); --color-ink-3: oklch(60% 0.01 260);
+  --color-rule: oklch(88.5% 0.008 85); --color-rule-2: oklch(81% 0.01 85);
+  --color-void: oklch(17% 0.006 260); --color-on-void: oklch(96% 0.004 85); --color-on-void-2: oklch(76% 0.006 85);
+  --color-live: oklch(60% 0.15 150); --color-live-text: oklch(47% 0.13 150); --color-live-soft: oklch(94% 0.04 150);
+  --color-wait: oklch(64% 0.14 70); --color-wait-soft: oklch(95% 0.04 80);
+  --color-stop: oklch(54% 0.19 27); --color-stop-soft: oklch(95% 0.03 27);
+  --color-focus: oklch(55% 0.17 255); --color-mat-line: oklch(90% 0.025 160);
+  --color-lens: oklch(96.8% 0.012 165); --color-frame: oklch(19% 0.012 40);
+  --color-acetate-top: oklch(30% 0.025 45); --color-acetate-bot: oklch(13% 0.01 40); --color-acetate-hi: oklch(78% 0.02 60);
+  --color-bevel: oklch(38% 0.02 45); --color-metal: oklch(80% 0.01 250); --color-metal-dark: oklch(52% 0.01 250);
+  --color-glass: oklch(12% 0.02 260); --color-glass-tint: oklch(40% 0.06 270); --color-glare: oklch(100% 0 0 / 0.16); --color-glare-0: oklch(100% 0 0 / 0);
+  --color-duck: oklch(88% 0.18 98); --color-duck-hi: oklch(97% 0.09 102); --color-duck-2: oklch(76% 0.17 80); --color-beak: oklch(72% 0.19 50); --color-beak-2: oklch(58% 0.18 40);
+  --color-pond: oklch(88% 0.05 230); --color-pond-line: oklch(78% 0.07 230);
+  --color-shadow: oklch(17% 0.006 260 / 0.45); --color-qr-dark: oklch(0% 0 0); --color-qr-light: oklch(100% 0 0);  /* QR: scanners need full contrast */
+  --font-display: "Avenir Next", "Avenir", system-ui, sans-serif;
+  --font-body: -apple-system, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --space-3xs: 0.25rem; --space-2xs: 0.5rem; --space-xs: 0.75rem; --space-sm: 1rem; --space-md: 1.5rem;
+  --space-lg: 2rem; --space-xl: 3rem; --space-2xl: 4.5rem;
+  --text-xs: 0.75rem; --text-sm: 0.8125rem; --text-base: 0.9375rem; --text-md: 1.0625rem; --text-lg: 1.375rem; --text-xl: 1.75rem;
+  --radius-sm: 4px; --radius-md: 8px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --dur-short: 160ms; --dur-med: 280ms; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { overflow-x: clip; }
+body { margin: 0; font: var(--text-base)/1.5 var(--font-body); background: var(--color-paper); color: var(--color-ink);
+       -webkit-font-smoothing: antialiased; }
+h2 { font: 600 var(--text-lg)/1.2 var(--font-display); letter-spacing: -0.01em; margin: 0; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* buttons: rectangular, ink-filled like the frames; one voice */
+button { font: 600 var(--text-sm)/1 var(--font-body); white-space: nowrap; padding: var(--space-xs) var(--space-sm);
+         border-radius: var(--radius-md); border: 1px solid var(--color-rule-2); background: var(--color-surface);
+         color: var(--color-ink); cursor: pointer; transition: background var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out); }
+button:hover { background: var(--color-paper-2); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: 0.45; cursor: default; }
+button:focus-visible, input:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.btn-ink { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper); }
+.btn-ink:hover { background: var(--color-ink-2); }
+.btn-stop { background: var(--color-stop-soft); border-color: transparent; color: var(--color-stop); }
+.btn-stop:hover { background: var(--color-stop-soft); border-color: var(--color-stop); }
+/* the tutorial button: the main way in, as big as the lens allows (cq units: the lens's text column, .guide) */
+.go-wrap { display: flex; justify-content: center; margin: clamp(0.5rem, 3.5cqh, 1.5rem) 0; }
+#test-go { font-size: clamp(var(--text-base), min(8.5cqh, 6.5cqw), var(--text-xl)); border-radius: 999px; width: min(100%, 24rem);
+           padding: clamp(0.5rem, 4.5cqh, 1.25rem) clamp(0.75rem, 5cqw, 2.5rem); box-shadow: 0 12px 28px -14px var(--color-shadow); }
+@container (max-height: 300px) { #s3-text { display: none; } }  /* a short lens: the button says it */
+.link { padding: 0; border: 0; background: none; color: var(--color-ink-2); text-decoration: underline;
+        text-underline-offset: 3px; text-decoration-color: var(--color-rule-2); }
+.link:hover { background: none; color: var(--color-ink); }
+
+/* corner controls: a gear and a Start/Stop pill floating top right, no bar (the tutorial covers them) */
+.bar { position: fixed; top: var(--space-sm); right: var(--space-lg); z-index: 30; display: flex; align-items: center; gap: var(--space-2xs); }
+.bar > button { box-shadow: 0 8px 20px -10px var(--color-shadow); }
+#run { height: 40px; padding: 0 var(--space-md) 0 var(--space-sm); border-radius: 20px; display: flex; align-items: center; gap: var(--space-2xs); }
+#run::before { content: ""; border-left: 9px solid currentColor; border-top: 5.5px solid transparent; border-bottom: 5.5px solid transparent; }  /* play */
+#run.btn-stop::before { width: 9px; height: 9px; border: 0; border-radius: 2px; background: currentColor; }  /* stop */
+#run.btn-stop { background: var(--color-surface); border-color: var(--color-stop); }
+#msg { margin: 0; padding: var(--space-xs) calc(var(--space-lg) + 180px) var(--space-xs) var(--space-lg); background: var(--color-stop-soft); color: var(--color-stop);  /* clear of the corner buttons */
+       font-weight: 600; border-bottom: 1px solid var(--color-rule); }
+#msg:empty { display: none; }
+
+main { max-width: 1240px; margin: 0 auto; padding: var(--space-2xl) var(--space-lg) var(--space-2xl); }  /* top: room under the corner buttons */
+
+/* viewfinder: the camera's picture with a heads-up readout in its corners */
+.slot { position: absolute; inset: 0; }
+.screen { position: absolute; inset: 0; margin: 0; background: var(--color-void);
+          overflow: hidden; display: grid; place-items: center; }
+.screen img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.empty { max-width: 36ch; text-align: center; color: var(--color-on-void-2); padding: var(--space-md); }
+.empty p { margin: 0; }
+.hud { position: absolute; inset: 0; pointer-events: none; font: 600 var(--text-xs)/1 var(--font-mono);
+       color: var(--color-on-void); letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
+.hud > * { position: absolute; display: flex; align-items: center; gap: var(--space-2xs); }
+.hud-tl { top: 13%; left: 11%; }
+.hud-tr { top: 13%; right: 11%; }
+.hud-bl { bottom: 20%; left: 15%; color: var(--color-on-void-2); }
+.slot-note { position: absolute; inset: 0; display: none; place-items: center; margin: 0; padding: var(--space-xl);
+             text-align: center; color: var(--color-on-void-2); }
+.slot-note .link { color: var(--color-on-void); }
+.slot.pipped .slot-note { display: grid; }
+.pip-bar { position: absolute; top: var(--space-2xs); right: var(--space-2xs); z-index: 3; display: none; gap: var(--space-3xs); }
+.pip-bar button { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 0;
+                  background: var(--color-void); color: var(--color-on-void); }
+.pip-bar svg { width: 12px; height: 12px; }
+
+/* mini-player: the same picture pinned to a corner; drag it to another corner */
+.screen.pip { position: fixed; inset: auto; border-radius: var(--radius-md); width: min(var(--pip-w, 320px), 46vw);
+              aspect-ratio: var(--pip-ar, 16 / 9); z-index: 40; cursor: grab;  /* the picture's own shape (set by script) */
+              touch-action: none; box-shadow: 0 18px 40px -12px var(--color-shadow);
+              animation: slide-in var(--dur-med) var(--ease-out); }
+.screen.pip[data-corner=br] { right: var(--space-md); bottom: var(--space-md); }
+.screen.pip[data-corner=bl] { left: var(--space-md); bottom: var(--space-md); }
+.screen.pip[data-corner=tr] { right: var(--space-md); top: 64px; }
+.screen.pip[data-corner=tl] { left: var(--space-md); top: 64px; }
+.screen.pip.dragging { cursor: grabbing; animation: none; }
+.screen.pip .pip-bar { display: flex; }
+.screen.pip .hud-tr { display: none; }
+.screen.pip .hud-tl { top: var(--space-2xs); left: var(--space-2xs); font-size: 10px; }
+.screen.pip .hud-bl { bottom: var(--space-2xs); left: var(--space-2xs); font-size: 10px; }
+.screen.pip .empty { display: none; }  /* the HUD's NO SIGNAL says it; the sentence doesn't fit */
+@keyframes slide-in { from { opacity: 0; transform: translateY(16px); } }
+
+/* readings under the picture: plain numbers, one line */
+.readings { display: flex; flex-wrap: wrap; gap: var(--space-2xs) var(--space-xl); margin: var(--space-md) 0 0; padding: 0 var(--space-xl); }
+.readings div { display: flex; align-items: baseline; gap: var(--space-2xs); }
+.readings dt { font-size: var(--text-sm); color: var(--color-ink-2); }
+.readings dd { margin: 0; font: 600 var(--text-md)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+/* gear: opens the settings and activity box */
+.gear { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border-radius: 50%; color: var(--color-ink-2); }
+.gear:hover { color: var(--color-ink); }
+.gear svg { transition: transform var(--dur-med) var(--ease-out); }
+body:has(.settings:popover-open) .gear { color: var(--color-ink); background: var(--color-paper-2); }
+body:has(.settings:popover-open) .gear svg { transform: rotate(45deg); }
+/* settings box: opens from the gear (a popover: Esc or a click outside closes it) */
+.settings { --box-w: min(880px, calc(100vw - 2 * var(--space-sm))); position: fixed; inset: auto; margin: 0; width: var(--box-w);
+  right: clamp(var(--space-sm), var(--gear-right, var(--space-lg)), calc(100vw - var(--box-w) - var(--space-sm)));  /* under the gear, kept on screen */
+  max-height: calc(100dvh - 96px); overflow: auto; padding: var(--space-sm) var(--space-md) var(--space-2xs);
+  background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-rule-2); border-radius: var(--radius-md);
+  box-shadow: 0 1px 2px var(--color-shadow), 0 24px 48px -20px var(--color-shadow);
+  opacity: 1; transform: none; transition: opacity var(--dur-short) var(--ease-out), transform var(--dur-short) var(--ease-out),
+  display var(--dur-short) allow-discrete, overlay var(--dur-short) allow-discrete; }
+@starting-style { .settings:popover-open { opacity: 0; transform: translateY(-6px); } }
+.settings:not(:popover-open) { opacity: 0; transform: translateY(-6px); }
+.settings h2 { font-size: var(--text-md); padding-bottom: var(--space-xs); border-bottom: 1px solid var(--color-ink); }
+.settings .opt:last-child { border-bottom: 0; }
+.settings:popover-open { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--space-lg); }
+.box-log { display: flex; flex-direction: column; }
+.box-log pre { flex: 1; height: auto; min-height: 260px; }
+
+/* the glasses, as if worn: left lens is the camera, right lens walks through setup.
+ * User-requested frame motif (overrides Hallmark gate 47). One SVG draws the frame over two lens-shaped panels;
+ * the panels sit exactly in the frame's lens holes (same unit path, percentages of the 1600x560 viewBox). */
+.glasses { position: relative; width: min(130vw, 2000px); aspect-ratio: 1600 / 560; margin-left: calc(50% - min(65vw, 1000px));
+           animation: don 1.9s var(--ease-out) backwards; }  /* backwards: no transform left behind (the mini-player is position: fixed) */
+@keyframes don { 0%, 30% { transform: translateY(10vh) scale(0.42); } 100% { transform: none; } }
+@keyframes unfold { 0%, 6% { transform: scaleX(0.06); } 32%, 100% { transform: none; } }
+@keyframes lens-in { 0%, 70% { opacity: 0; } 100% { opacity: 1; } }
+.frame { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: visible; }
+.temple { transform-box: fill-box; animation: unfold 1.9s var(--ease-out) backwards; }
+.temple-l { transform-origin: right center; }
+.temple-r { transform-origin: left center; }
+.lens { position: absolute; z-index: 1; top: 16.964%; width: 30.625%; height: 73.214%; }
+.lens > .slot, .lens > .guide { animation: lens-in 1.9s var(--ease-out) backwards; }  /* not the QR: unhiding it would replay the fade */
+.lens-cam { left: 15.625%; clip-path: url(#clip-l); background: var(--color-void); }
+.lens-guide { left: 53.75%; clip-path: url(#clip-r); background: var(--color-lens); }
+.lens-cam:has(.screen.pip) { clip-path: none; background: transparent; }
+.lens-cam:has(.screen.pip) .slot-note { color: var(--color-ink-2); }
+.lens-cam:has(.screen.pip) .slot-note .link { color: var(--color-ink); }
+.qr-wrap { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: var(--color-void); }
+.qr-wrap .qr { width: 44%; height: auto; aspect-ratio: 1; border-radius: var(--radius-md); }
+.guide { position: absolute; inset: 0; overflow-y: auto; scrollbar-width: none; padding: 7% 11% 18%; container-type: inline-size; }
+@media (min-width: 901px) { .guide { container-type: size; } }  /* a fixed-size lens here; on narrow screens it grows with its text */
+#s1:has(#pairbox:not([hidden])) :is(#s1-text, #addr-row, #manual, #cams) { display: none; }
+#s1:has(#cams[open]) :is(#s1-text, #addr-row, #manual, .step-foot) { display: none; }  /* choosing a camera: room for the list */  /* while pairing the lens only has room for the instructions */
+.tabs { display: flex; flex-wrap: wrap; gap: var(--space-3xs); margin-bottom: var(--space-sm); }
+.tabs button { display: flex; align-items: center; gap: var(--space-2xs); border-color: transparent; background: transparent;
+               color: var(--color-ink-2); padding: var(--space-2xs) var(--space-xs); }
+.tabs button:hover { background: var(--color-surface); }
+.tabs button[aria-selected=true] { background: var(--color-surface); border-color: var(--color-rule-2); color: var(--color-ink); }
+.step-n { margin: 0; font: var(--text-xs) var(--font-mono); color: var(--color-ink-2); }
+.step h2 { font-size: var(--text-xl); margin: var(--space-3xs) 0 var(--space-2xs); }
+.step > p { margin: 0 0 var(--space-2xs); color: var(--color-ink-2); }
+.step-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); flex-wrap: wrap;
+             margin-top: var(--space-sm); }
+.seq-state { display: flex; align-items: center; gap: var(--space-2xs); font-size: var(--text-sm); color: var(--color-ink-2); }
+[data-s=done] .seq-state { color: var(--color-live-text); }
+.lens-guide .pairbox { padding: 0; border: 0; background: none; margin-top: var(--space-2xs); }
+.addr-row { display: flex; align-items: center; gap: var(--space-xs); margin-top: var(--space-2xs); }
+.addr { font: var(--text-sm) var(--font-mono); color: var(--color-ink-2); white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; min-width: 0; transition: filter var(--dur-short) var(--ease-out); }
+body.hide-addr .addr, body.hide-addr .secret:not(:focus) { filter: blur(5px); user-select: none; }
+.pairbox { display: flex; gap: var(--space-md); align-items: center; margin-top: var(--space-sm); padding: var(--space-sm);
+           border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface);
+           animation: slide-in var(--dur-med) var(--ease-out); }
+.qr { width: 156px; height: 156px; flex: none; display: block; }
+.pairbox ol { margin: 0; padding-left: 1.2em; font-size: var(--text-sm); }
+.pairbox li + li { margin-top: var(--space-3xs); }
+.countdown { margin: var(--space-xs) 0 0; font-size: var(--text-sm); color: var(--color-ink-2); }
+details { margin-top: var(--space-xs); }
+.cam-note { margin: var(--space-2xs) 0 0; font-size: var(--text-sm); color: var(--color-ink-2); }
+#cam-list { display: block; width: 100%; margin-top: var(--space-2xs); padding: var(--space-2xs) var(--space-xs); font: var(--text-sm) var(--font-body);
+  color: var(--color-ink); background: var(--color-surface); border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm); }
+#cam-list:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+summary { cursor: pointer; color: var(--color-ink-2); font-size: var(--text-sm); }
+input[type=text], input[type=number] { font: var(--text-sm) var(--font-mono); color: var(--color-ink); background: var(--color-surface);
+  border: 1px solid var(--color-rule-2); border-radius: var(--radius-sm); padding: var(--space-2xs) var(--space-xs); }
+input[type=text] { width: 100%; margin-top: var(--space-2xs); }
+input[type=number] { width: 6rem; text-align: right; }
+.problem { margin: var(--space-2xs) 0 0; color: var(--color-stop); font: 600 var(--text-xs)/1.4 var(--font-mono); overflow-wrap: anywhere; }
+
+/* finger gestures: what to do in each test zone */
+.gesture { display: inline-flex; flex: none; width: 40px; height: 40px; color: var(--color-ink-2); pointer-events: none; }
+.gesture svg { width: 100%; height: 100%; overflow: visible; }
+.g-fing { fill: var(--color-surface); stroke: currentColor; stroke-width: 1.6; }
+.g-nail { fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.5; }
+.g-arrow { fill: none; stroke: var(--color-ink-3); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.g-rip { fill: none; stroke: var(--color-live); stroke-width: 1.6; transform-box: fill-box; transform-origin: center;
+         animation: g-rip 1.6s var(--ease-out) infinite; }
+.g-rip.d2 { animation-delay: 0.28s; }
+.g-drag .g-hand { animation: g-move 2.6s var(--ease-out) infinite; }
+.g-drag .g-rip { animation: g-rip 2.6s var(--ease-out) infinite; }
+.g-drag .g-rip.d2 { animation-delay: 0.28s; }
+.g-vert .g-hand { animation: g-vert 1.8s var(--ease-out) infinite alternate; }
+.g-horz .g-hand { animation: g-horz 1.8s var(--ease-out) infinite alternate; }
+@keyframes g-rip { 0% { transform: scale(0.4); opacity: 0; } 12% { opacity: 1; } 55%, 100% { transform: scale(2.4); opacity: 0; } }
+@keyframes g-move { 0%, 30% { transform: none; } 75%, 100% { transform: translateX(12px); } }
+@keyframes g-vert { from { transform: translateY(5px); } to { transform: translateY(-6px); } }
+@keyframes g-horz { from { transform: translateX(-5px); } to { transform: translateX(6px); } }
+/* full-screen tutorial: one task at a time; the glasses' view stays in the corner */
+.tut { display: none; position: fixed; inset: 0; z-index: 35; background: var(--color-paper);
+       user-select: none; -webkit-user-select: none;  /* a drag that misses the duck mustn't select text */
+       grid-template-rows: auto minmax(0, 1fr); padding: var(--space-md) var(--space-lg) var(--space-lg); }
+body.testing { overflow: hidden; }
+body.testing .tut { display: grid; }
+body.testing .lens-cam { z-index: 50; pointer-events: none; border: 0; background: none; clip-path: none; }  /* lifts the mini-player above the tutorial */
+body.testing .screen:not(.pip) { display: none; }  /* only the mini-player shows during the tutorial, never the lens */
+body.testing .screen.pip { pointer-events: auto; }
+body.testing .slot-note { display: none !important; }
+.tut-top { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-sm); }
+.tut-actions { display: flex; gap: var(--space-2xs); }
+.tut-body { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: var(--space-xl); align-items: stretch;
+            margin-top: var(--space-lg); min-height: 0; }
+.tut-copy { align-self: center; }
+.tut-copy h2 { font-size: clamp(var(--text-xl), 3.4vw, 2.75rem); line-height: 1.1; margin: var(--space-2xs) 0 var(--space-sm); }
+.tut-copy p { color: var(--color-ink-2); margin: 0; }
+.tut-hand { position: relative; width: 260px; height: 260px; margin-top: var(--space-md); color: var(--color-ink); }
+.tut-hand canvas { width: 100%; height: 100%; display: block; }
+.tut-hand > svg { width: 50%; height: 50%; }  /* flat fallback when WebGL is missing */
+.hand-rip { position: absolute; left: 54%; top: 9%; width: 28px; height: 28px; margin: -14px 0 0 -14px; border-radius: 50%;
+            border: 2px solid var(--color-live); opacity: 0; pointer-events: none; }
+.tut-result { margin-top: var(--space-md) !important; font: 600 var(--text-md)/1.4 var(--font-mono); color: var(--color-live-text) !important; min-height: 1.4em; }
+.tut-stage { position: relative; overflow: hidden; border-radius: var(--radius-md); border: 1px solid var(--color-rule-2);
+             background-color: var(--color-paper-2);
+             /* faint camouflage under the grid: the plain grid gave content matching nothing to find the screen by, so the
+                on-demand markers stayed up through the tutorial (simulated glasses views: 0/40 matched -> 40/40; 22 % is
+                the faintest that held: 19 % 36/40, 16 % 24/40) */
+             background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%201600%201000%27%20preserveAspectRatio%3D%27xMidYMid%20slice%27%3E%3Cfilter%20id%3D%27f%27%20x%3D%270%27%20y%3D%270%27%20width%3D%27100%25%27%20height%3D%27100%25%27%3E%3CfeTurbulence%20type%3D%27fractalNoise%27%20baseFrequency%3D%270.005%27%20numOctaves%3D%274%27%20seed%3D%277%27%2F%3E%3CfeColorMatrix%20type%3D%27matrix%27%20values%3D%270%200%200%200%200.42%200%200%200%200%200.44%200%200%200%200%200.47%201%200%200%200%200%27%2F%3E%3CfeComponentTransfer%3E%3CfeFuncA%20type%3D%27discrete%27%20tableValues%3D%270%200%200%200%200%200%200%200%200.22%200.22%200%200%200.22%200.22%200%200%200%200%200%200%27%2F%3E%3C%2FfeComponentTransfer%3E%3C%2Ffilter%3E%3Crect%20width%3D%271600%27%20height%3D%271000%27%20filter%3D%27url%28%23f%29%27%2F%3E%3C%2Fsvg%3E"),
+                               linear-gradient(var(--color-mat-line) 1px, transparent 1px), linear-gradient(90deg, var(--color-mat-line) 1px, transparent 1px);
+             background-size: cover, 24px 24px, 24px 24px; display: grid; place-items: center; transition: border-color var(--dur-med) var(--ease-out); }
+.tut-stage.win { border-color: var(--color-live); }
+.tut-btn { font: 600 var(--text-lg)/1 var(--font-display); padding: var(--space-lg) var(--space-xl); }
+.duck { position: absolute; width: 144px; height: 148px; padding: 24px; border: 0; background: none; cursor: pointer;
+        touch-action: none; }  /* the padding is an invisible grab margin: taps land 20-50 pt off */
+.duck:hover { background: none; }
+.duck svg { width: 100%; height: 100%; overflow: visible; }
+.duck-wing { fill: var(--color-duck-2); stroke: var(--color-duck-2); } .duck-beak { fill: var(--color-beak); } .duck-eye { fill: var(--color-ink); }
+.duck.quack { animation: quack 0.5s var(--ease-out); }
+@keyframes quack { 25% { transform: rotate(-10deg) scale(1.1); } 55% { transform: rotate(8deg) scale(1.04); } }
+.duck.swimming svg { filter: drop-shadow(0 0 0 transparent); }
+.quack-bubble { position: absolute; z-index: 3; transform: translate(-50%, -100%); padding: var(--space-3xs) var(--space-xs);
+                border-radius: var(--radius-md); background: var(--color-surface); border: 1px solid var(--color-rule-2);
+                font: 700 var(--text-md)/1.2 var(--font-display); pointer-events: none; animation: bubble 1s var(--ease-out) forwards; }
+@keyframes bubble { 0% { opacity: 0; transform: translate(-50%, -80%) scale(0.7); } 20% { opacity: 1; transform: translate(-50%, -110%) scale(1); }
+                    75% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -150%); } }
+.duck.dragging { cursor: grabbing; filter: drop-shadow(0 10px 8px var(--color-shadow)); }
+.pond { position: absolute; right: 6%; top: 44%; width: 58%; aspect-ratio: 1.7 / 1; transform: translateY(-50%); border-radius: 50%;
+        background: var(--color-pond); box-shadow: inset 0 0 0 2px var(--color-pond-line); display: grid; place-items: center;
+        color: var(--color-ink-2); font-size: var(--text-sm); }
+.pond.near { box-shadow: inset 0 0 0 3px var(--color-live); }
+.tut-list { width: min(100%, 28rem); height: 70%; overflow-y: auto; background: var(--color-surface); border: 1px solid var(--color-rule-2);
+            border-radius: var(--radius-md); }
+.tut-list div { height: 56px; line-height: 56px; padding: 0 var(--space-md); border-bottom: 1px solid var(--color-rule); font: var(--text-md)/56px var(--font-mono); }
+.tut-list div:last-child { color: var(--color-live-text); font-weight: 600; }
+.tut-summary { width: min(100%, 30rem); padding: var(--space-lg); background: var(--color-surface); border: 1px solid var(--color-rule-2);
+               border-radius: var(--radius-md); }
+.tut-summary dl { margin: var(--space-sm) 0 var(--space-md); display: grid; grid-template-columns: 1fr auto; gap: var(--space-2xs) var(--space-md); }
+.tut-summary dt { color: var(--color-ink-2); } .tut-summary dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.tut-summary .dialog-actions { justify-content: flex-start; }
+@media (max-width: 900px) { .tut { padding: var(--space-sm); } .tut-body { grid-template-columns: minmax(0, 1fr); gap: var(--space-sm); margin-top: var(--space-sm); }
+  .tut-hand { width: 150px; height: 150px; margin-top: var(--space-xs); } .pond { width: 62%; } }
+dialog { border: 1px solid var(--color-rule-2); border-radius: var(--radius-md); padding: var(--space-lg); max-width: 30rem;
+         background: var(--color-surface); color: var(--color-ink); }
+dialog::backdrop { background: var(--color-shadow); }
+dialog p { color: var(--color-ink-2); margin: var(--space-xs) 0 var(--space-md); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2xs); }
+.well-head span { color: var(--color-ink-2); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+/* settings and activity */
+.box-log .log-head { padding-bottom: var(--space-xs); border-bottom: 1px solid var(--color-ink); }
+.box-log h2 { padding: 0; border: 0; }  /* the rule runs under the whole head, state included */
+.opt { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); padding: var(--space-xs) 0;
+       border-bottom: 1px solid var(--color-rule); }
+.opt small { display: block; color: var(--color-ink-2); font-size: var(--text-sm); }
+input[type=checkbox] { appearance: none; -webkit-appearance: none; flex: none; width: 40px; height: 24px; margin: 0;
+  border-radius: 12px; background: var(--color-rule-2); position: relative; cursor: pointer;
+  transition: background var(--dur-short) var(--ease-out); }
+input[type=checkbox]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--color-surface); transition: transform var(--dur-short) var(--ease-out); }
+input[type=checkbox]:checked { background: var(--color-ink); }
+input[type=checkbox]:checked::after { transform: translateX(16px); }
+.log-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-sm); }
+.log-head p { margin: 0; color: var(--color-ink-2); font-size: var(--text-sm); }
+pre { margin: var(--space-sm) 0 0; height: 340px; overflow: auto; padding: var(--space-sm); background: var(--color-surface);
+      border: 1px solid var(--color-rule-2); border-radius: var(--radius-md); font: var(--text-xs)/1.6 var(--font-mono);
+      color: var(--color-ink-2); white-space: pre-wrap; word-break: break-all; }
+
+@media (max-width: 900px) {
+  .bar { top: var(--space-xs); right: var(--space-sm); }
+  #msg { padding-left: var(--space-sm); }
+  main { padding: 4rem var(--space-sm) var(--space-xl); }  /* under the corner buttons */
+  .readings { padding: 0; gap: var(--space-2xs) var(--space-md); }
+  .settings:popover-open { grid-template-columns: minmax(0, 1fr); }
+  .settings { left: var(--space-sm); right: var(--space-sm); width: auto; }
+  .glasses, .lens > .slot, .lens > .guide { animation: none; }
+  .glasses { display: grid; gap: var(--space-md); width: auto; margin-left: 0; aspect-ratio: auto; }
+  .frame { display: none; }
+  .lens { position: relative; inset: auto; width: auto; height: auto; clip-path: none; overflow: hidden;
+          border: 10px solid var(--color-frame); border-top-width: 16px; border-radius: 28px 28px 40% 40% / 28px 28px 30% 30%; }
+  .lens-cam { left: auto; aspect-ratio: 4 / 3; }
+  .lens-guide { left: auto; }
+  .guide { position: static; overflow: visible; padding: var(--space-lg) var(--space-lg) 14%; }
+  .pairbox { flex-direction: column; align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; }
+  .g-rip { animation: none !important; opacity: 0.8; transform: scale(1.6); } }  /* still gestures: show the tap ring, no loop */
+</style></head>
+<body class="hide-addr">
+<header class="bar" id="bar">
+  <button class="gear" id="gear" popovertarget="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M19.41 10.29L22.11 10.67L22.11 13.33L19.41 13.71A7.6 7.6 0 0 1 18.45 16.03L20.09 18.21L18.21 20.09L16.03 18.45A7.6 7.6 0 0 1 13.71 19.41L13.33 22.11L10.67 22.11L10.29 19.41A7.6 7.6 0 0 1 7.97 18.45L5.79 20.09L3.91 18.21L5.55 16.03A7.6 7.6 0 0 1 4.59 13.71L1.89 13.33L1.89 10.67L4.59 10.29A7.6 7.6 0 0 1 5.55 7.97L3.91 5.79L5.79 3.91L7.97 5.55A7.6 7.6 0 0 1 10.29 4.59L10.67 1.89L13.33 1.89L13.71 4.59A7.6 7.6 0 0 1 16.03 5.55L18.21 3.91L20.09 5.79L18.45 7.97A7.6 7.6 0 0 1 19.41 10.29Z"/><circle cx="12" cy="12" r="3.2"/></svg></button>
+  <button class="btn-ink" id="run" aria-label="Start tracking">Start</button>
+</header>
+<section class="settings" id="settings" popover aria-label="Settings and activity">
+ <div class="box-col">
+  <h2 id="opt-h">Settings</h2>
+  <label class="opt"><span>Touch<small>Click where you tap</small></span><input type="checkbox" id="touch"></label>
+  <label class="opt"><span>Screen markers<small>Tags at the screen's edges. Off: the screen is found from what it shows (needs Screen Recording)</small></span><input type="checkbox" id="show_markers"></label>
+  <label class="opt"><span>Hide markers until needed<small>They appear only when the screen can't be found from what it shows (needs Screen Recording)</small></span><input type="checkbox" id="markers_on_demand"></label>
+  <label class="opt"><span>Practice mode<small>Track, but leave the mouse alone</small></span><input type="checkbox" id="dry_run"></label>
+  <label class="opt"><span>Tap details in the log<small>One line per tap</small></span><input type="checkbox" id="touch_debug"></label>
+  <label class="opt"><span>Marker size<small>In points</small></span><input type="number" id="marker_size" min="40" max="1000" placeholder="140"></label>
+  <label class="opt"><span>Lightest tap that counts<small>In g; lower catches softer taps</small></span><input type="number" id="tap_min_acc" min="0" max="0.05" step="0.001"></label>
+ </div>
+ <div class="box-col box-log">
+  <div class="log-head"><h2 id="log-h">Activity</h2><p id="state">Checking…</p></div>
+  <pre id="log" aria-label="Tracker output"></pre>
+ </div>
+</section>
+<p id="msg" role="alert"></p>
+
+<main>
+<section class="glasses" aria-label="Camera and setup">
+  <div class="lens lens-cam">
+    <div class="slot" id="slot">
+      <p class="slot-note">The picture is in the corner.&nbsp;<button type="button" class="link" id="pip-back">Bring it back</button></p>
+      <figure class="screen" id="screen" data-corner="br">
+        <img id="preview" alt="Live view from the glasses" hidden>
+        <div class="empty" id="empty"><p id="nopreview">Pair your phone to see what the glasses see.</p></div>
+        <div class="hud" id="led" data-s="off">
+          <span class="hud-tl"><span id="viewtag">NO SIGNAL</span></span>
+          <span class="hud-tr" id="hud-fps"></span>
+          <span class="hud-bl" id="hud-detail"></span>
+        </div>
+        <div class="pip-bar">
+          <button type="button" id="pip-up" aria-label="Back to the big view"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 7V2h5M2 2l5 5M10 5v5H5"/></svg></button>
+          <button type="button" id="pip-close" aria-label="Close the mini view"><svg viewBox="0 0 12 12" stroke="currentColor" stroke-width="1.6"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+        </div>
+      </figure>
+    </div>
+    <div class="qr-wrap" id="qrwrap" hidden><svg class="qr" id="qr" role="img" aria-label="Pairing QR code"></svg></div>
+  </div>
+  <div class="lens lens-guide">
+    <div class="guide">
+      <div class="tabs" role="tablist" aria-label="Setup steps">
+        <button type="button" role="tab" id="tab-1" aria-controls="s1">1 Pair</button>
+        <button type="button" role="tab" id="tab-2" aria-controls="s2">2 Stream</button>
+        <button type="button" role="tab" id="tab-3" aria-controls="s3">3 Track</button>
+      </div>
+
+      <div class="step" id="s1" role="tabpanel" aria-labelledby="tab-1" data-s="now">
+        <p class="step-n">Step 1 of 3</p>
+        <h2>Pair the phone</h2>
+        <p id="s1-text">Scan a code from here with the iPhone Camera.</p>
+        <div class="addr-row" id="addr-row" hidden>
+          <span class="addr" id="addr"></span>
+          <button type="button" class="link" id="reveal" aria-pressed="false">Show</button>
+        </div>
+        <div class="pairbox" id="pairbox" hidden>
+          <div>
+            <ol>
+              <li>Open the iPhone Camera and point it at the code in the left lens.</li>
+              <li>Tap the banner to open GlassesTouch.</li>
+            </ol>
+            <p class="countdown"><span id="pairleft"></span> · <button type="button" class="link" id="paircancel">Cancel</button></p>
+          </div>
+        </div>
+        <details id="cams">
+          <summary>Use a camera pointed at the screen instead</summary>
+          <p class="cam-note">An iPhone on a stand (Continuity Camera, same Apple ID as this Mac) or a USB webcam, with the screen and its markers in view.</p>
+          <select id="cam-list" aria-label="Camera"><option value="">Looking for cameras…</option></select>
+        </details>
+        <details id="manual">
+          <summary>Type the address instead</summary>
+          <input type="text" id="source" class="secret" placeholder="10.0.0.5 or http://phone.local:8080/"
+                 spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Phone stream address">
+        </details>
+        <div class="step-foot">
+          <span class="seq-state"><span id="s1-state">Not linked</span></span>
+          <button type="button" class="btn-ink" id="pair">Pair phone</button>
+        </div>
+      </div>
+
+      <div class="step" id="s2" role="tabpanel" aria-labelledby="tab-2" data-s="todo" hidden>
+        <p class="step-n">Step 2 of 3</p>
+        <h2 id="s2-h">Stream from the glasses</h2>
+        <p id="s2-text">Put the glasses on. On the phone, open GlassesTouch and tap Start streaming, or tap Use this phone's camera instead and stand the phone facing the screen. The left lens shows the picture when it arrives.</p>
+        <div class="step-foot">
+          <span class="seq-state"><span id="s2-state">No picture</span></span>
+        </div>
+      </div>
+
+      <div class="step" id="s3" role="tabpanel" aria-labelledby="tab-3" data-s="todo" hidden>
+        <p class="step-n">Step 3 of 3</p>
+        <h2>Track and test</h2>
+        <p id="s3-text">Taps on the screen become clicks where your finger is.</p>
+        <p id="helper">Checking the tap sensor…</p>
+        <div id="problems"></div>
+        <div class="go-wrap"><button type="button" class="btn-ink" id="test-go">Start the tutorial</button></div>
+        <div class="step-foot">
+          <span class="seq-state"><span id="s3-state">Off</span></span>
+          <span>
+            <button type="button" id="start">Start tracking</button>
+            <button type="button" class="btn-stop" id="stop" hidden>Stop</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <svg class="frame" viewBox="0 0 1600 560" aria-hidden="true" focusable="false">
+    <defs>
+      <!-- one Wayfarer lens in unit coordinates (outer edge at x=0): brow rises to the outer corner, flatter bottom -->
+      <path id="lens-u" d="M0.03 0.02C0.3 0 0.72 0.04 0.965 0.09C0.995 0.1 1 0.15 0.995 0.21C0.985 0.47 0.965 0.7 0.86 0.86C0.74 1 0.42 1.01 0.24 0.93C0.09 0.86 0.025 0.58 0.005 0.17C0 0.08 0.005 0.03 0.03 0.02Z"/>
+      <clipPath id="clip-l" clipPathUnits="objectBoundingBox"><use href="#lens-u"/></clipPath>
+      <clipPath id="clip-r" clipPathUnits="objectBoundingBox"><use href="#lens-u" transform="translate(1 0) scale(-1 1)"/></clipPath>
+      <clipPath id="hole-l"><use href="#lens-u" transform="translate(250 95) scale(490 410)"/></clipPath>
+      <clipPath id="hole-r"><use href="#lens-u" transform="translate(1350 95) scale(-490 410)"/></clipPath>
+      <linearGradient id="acetate" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color: var(--color-acetate-top)"/><stop offset="0.55" style="stop-color: var(--color-acetate-bot)"/>
+      </linearGradient>
+      <linearGradient id="temple-g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color: var(--color-acetate-top)"/><stop offset="1" style="stop-color: var(--color-acetate-bot)"/>
+      </linearGradient>
+      <linearGradient id="glare" x1="0" y1="0" x2="0.75" y2="1">
+        <stop offset="0" style="stop-color: var(--color-glare)"/><stop offset="0.38" style="stop-color: var(--color-glare-0)"/>
+      </linearGradient>
+      <radialGradient id="cam-glass" cx="0.4" cy="0.4" r="0.7">
+        <stop offset="0" style="stop-color: var(--color-glass-tint)"/><stop offset="0.7" style="stop-color: var(--color-glass)"/>
+      </radialGradient>
+      <mask id="holes" maskUnits="userSpaceOnUse" x="0" y="0" width="1600" height="560">
+        <rect width="1600" height="560" fill="white"/>
+        <use href="#lens-u" transform="translate(250 95) scale(490 410)" fill="black"/>
+        <use href="#lens-u" transform="translate(1350 95) scale(-490 410)" fill="black"/>
+      </mask>
+    </defs>
+
+    <!-- arms, seen from inside: they run back toward your ears, so they widen toward the screen edges; they fold open on load -->
+    <g class="temple temple-l">
+      <path d="M200 96L0 122V240L200 150Z" fill="url(#temple-g)"/>
+      <path d="M200 97L0 123" fill="none" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.3" stroke-width="2"/>
+    </g>
+    <g class="temple temple-r">
+      <path d="M1400 96L1600 122V240L1400 150Z" fill="url(#temple-g)"/>
+      <path d="M1400 97L1600 123" fill="none" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.3" stroke-width="2"/>
+    </g>
+
+    <!-- front: two rims, the keyhole bridge and the thick end pieces, with the lens holes cut out -->
+    <g mask="url(#holes)" fill="url(#acetate)">
+      <use href="#lens-u" transform="translate(222 52) scale(546 478)"/>
+      <use href="#lens-u" transform="translate(1378 52) scale(-546 478)"/>
+      <path d="M730 96C770 91 830 91 870 96V152C845 130 755 130 730 152Z"/>
+      <rect x="166" y="64" width="110" height="98" rx="28"/>
+      <rect x="1324" y="64" width="110" height="98" rx="28"/>
+    </g>
+    <!-- rim light on the outer edge, bevel on the inner edge -->
+    <g fill="none">
+      <path d="M 238.4 61.6 C 385.8 52.0 615.1 71.1 748.9 95.0 C 765.3 99.8 768.0 123.7 765.3 152.4 C 759.8 276.7 748.9 386.6 691.6 463.1 C 626.0 530.0 451.3 534.8 353.0 496.5 C 271.1 463.1 235.7 329.2 224.7 133.3 C 222.0 90.2 224.7 66.3 238.4 61.6 Z" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.25" stroke-width="1.5"/>
+      <path d="M 1361.6 61.6 C 1214.2 52.0 984.9 71.1 851.1 95.0 C 834.7 99.8 832.0 123.7 834.7 152.4 C 840.2 276.7 851.1 386.6 908.4 463.1 C 974.0 530.0 1148.7 534.8 1247.0 496.5 C 1328.9 463.1 1364.3 329.2 1375.3 133.3 C 1378.0 90.2 1375.3 66.3 1361.6 61.6 Z" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.25" stroke-width="1.5"/>
+      <path d="M 264.7 103.2 C 397.0 95.0 602.8 111.4 722.8 131.9 C 737.5 136.0 740.0 156.5 737.5 181.1 C 732.6 287.7 722.8 382.0 671.4 447.6 C 612.6 505.0 455.8 509.1 367.6 476.3 C 294.1 447.6 262.2 332.8 252.4 164.7 C 250.0 127.8 252.4 107.3 264.7 103.2 Z" style="stroke: var(--color-bevel)" stroke-width="3"/>
+      <path d="M 1335.3 103.2 C 1203.0 95.0 997.2 111.4 877.2 131.9 C 862.5 136.0 860.0 156.5 862.5 181.1 C 867.4 287.7 877.2 382.0 928.6 447.6 C 987.4 505.0 1144.2 509.1 1232.4 476.3 C 1305.9 447.6 1337.8 332.8 1347.5 164.7 C 1350.0 127.8 1347.5 107.3 1335.3 103.2 Z" style="stroke: var(--color-bevel)" stroke-width="3"/>
+    </g>
+    <!-- sheen along each brow -->
+    <path d="M300 66Q500 54 726 84" fill="none" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.35" stroke-width="3" stroke-linecap="round"/>
+    <path d="M874 84Q1100 54 1300 66" fill="none" style="stroke: var(--color-acetate-hi)" stroke-opacity="0.35" stroke-width="3" stroke-linecap="round"/>
+    <!-- hinge seams -->
+    <path d="M170 82V150M1430 82V150" fill="none" style="stroke: var(--color-acetate-bot)" stroke-width="3"/>
+    <!-- metal hinge barrels on the inside of each end piece -->
+    <g style="fill: var(--color-metal-dark)">
+      <rect x="178" y="100" width="22" height="46" rx="5"/><rect x="1400" y="100" width="22" height="46" rx="5"/>
+    </g>
+    <path d="M183 104V142M1417 104V142" fill="none" style="stroke: var(--color-metal)" stroke-opacity="0.7" stroke-width="2" stroke-linecap="round"/>
+    <!-- faint glare across both lenses -->
+    <rect x="250" y="95" width="490" height="410" fill="url(#glare)" clip-path="url(#hole-l)"/>
+    <rect x="860" y="95" width="490" height="410" fill="url(#glare)" clip-path="url(#hole-r)"/>
+  </svg>
+</section>
+<dl class="readings">
+  <div><dt>Frame rate</dt><dd id="r-fps">–</dd></div>
+  <div><dt>Hand in view</dt><dd id="r-hand">–</dd></div>
+  <div><dt>Screen located</dt><dd id="r-screen">–</dd></div>
+</dl>
+</main>
+<section class="tut" id="tutorial" aria-labelledby="tut-h">
+  <div class="tut-top">
+    <span class="tut-actions"><button type="button" id="tut-voice" aria-pressed="true">Voice on</button> <button type="button" id="tut-skip">Skip step</button> <button type="button" class="btn-ink" id="tut-exit">Exit</button></span>
+  </div>
+  <div class="tut-body">
+    <div class="tut-copy" aria-live="polite">
+      <p class="step-n" id="tut-n"></p>
+      <h2 id="tut-h"></h2>
+      <p id="tut-hint"></p>
+      <div class="tut-hand" id="tut-g" aria-hidden="true"><canvas id="hand3d"></canvas><span class="hand-rip" id="hand-rip"></span></div>
+      <p class="tut-result" id="tut-result"></p>
+    </div>
+    <div class="tut-stage" id="tut-stage"></div>
+  </div>
+</section>
+<dialog id="paired" aria-labelledby="paired-h">
+  <h2 id="paired-h">Phone paired</h2>
+  <p>Put the glasses on and tap Start streaming on the phone. Then a short full-screen tutorial walks you through tapping, double-tapping, dragging and scrolling.</p>
+  <form method="dialog" class="dialog-actions"><button value="later">Not now</button> <button class="btn-ink" id="paired-go" value="go">Start the test</button></form>
+</dialog>
+<script>
+const TOKEN = __TOKEN__;
+const CONFIG = __CONFIG__;
+const VIEW_URL = __VIEW_URL__;
+const BOOL_KEYS = ["touch", "show_markers", "markers_on_demand", "dry_run", "touch_debug"];
+const IPV4 = /\b\d{1,3}(?:\.\d{1,3}){3}\b/g;
+const $ = id => document.getElementById(id);
+
+let phoneSrc = "", trackerRunning = false, reveal = false, imgFailed = false, pairWasOpen = false, picture = false;
+const mask = text => reveal ? text : text.replace(IPV4, "•••.•••.•••.•••");
+let cameras = [];  // [{id, name}] from /cameras
+const isCam = () => phoneSrc.startsWith("camera:");
+const camName = () => (cameras.find(c => "camera:" + c.id === phoneSrc) || { name: "the chosen camera" }).name;
+
+// ---- live view
+function setPreview(src) {
+  const img = $("preview");
+  if (!src) {
+    img.hidden = true;
+    img.removeAttribute("src");
+    $("nopreview").textContent = isCam() ? `Start tracking to see what ${camName()} sees.` : "Pair your phone to see what the glasses see.";
+    $("empty").hidden = false;
+  } else if (img.getAttribute("src") !== src) {
+    imgFailed = false;
+    img.hidden = true;  // still loads; showPicture() reveals it once a frame has arrived
+    $("nopreview").textContent = trackerRunning ? "Starting the tracker view…" : "Waiting for the glasses. Tap Start streaming on the phone.";
+    $("empty").hidden = false;
+    img.src = src;
+  }
+}
+function showPicture() {
+  const img = $("preview");
+  picture = !!img.getAttribute("src") && img.naturalWidth > 0 && !imgFailed;
+  if (picture && img.hidden) {
+    img.hidden = false;
+    $("empty").hidden = true;
+  }
+  if (picture) {  // the mini-player takes the picture's shape: the phone's stream is portrait, the tracker's view is not
+    const ar = img.naturalWidth / img.naturalHeight;
+    screen.style.setProperty("--pip-ar", `${img.naturalWidth} / ${img.naturalHeight}`);
+    screen.style.setProperty("--pip-w", (ar >= 1 ? 320 : Math.round(360 * ar)) + "px");
+  }
+  $("led").dataset.s = picture ? "on" : "off";
+  $("viewtag").textContent = picture ? (trackerRunning ? "LIVE · TRACKING" : "LIVE") : "NO SIGNAL";
+  return picture;
+}
+const previewSrc = () => trackerRunning ? VIEW_URL : isCam() ? "" : phoneSrc;
+function updatePreview() {  // the tracker's view while it runs, else the phone's stream (a Mac camera has none)
+  setPreview(previewSrc());
+}
+$("preview").onload = showPicture;
+$("preview").onerror = () => {  // no broken-image icon: say what to check instead
+  imgFailed = true;
+  $("preview").hidden = true;
+  $("empty").hidden = false;
+  $("nopreview").textContent = trackerRunning
+    ? "No picture from the tracker yet. It may still be starting."
+    : "No picture yet. On the phone, open GlassesTouch and tap Start streaming.";
+  showPicture();
+};
+setInterval(() => {  // the stream may come back (the phone started streaming): retry a failed picture
+  if (imgFailed && previewSrc()) { $("preview").removeAttribute("src"); updatePreview(); }
+}, 4000);
+
+// ---- mini-player: when the big view scrolls away, the same picture floats in a corner
+const screen = $("screen"), slot = $("slot");
+let slotVisible = true, pipClosed = false;
+let pipPos = null;  // where the mini-player was dropped (px from the window's top left); remembered in this browser
+try { pipPos = JSON.parse(localStorage.getItem("gt-pip")); } catch (e) {}
+function placePip(on) {  // at the dropped spot, kept inside the window; else the default corner
+  const st = screen.style;
+  if (on && pipPos && !pipDrag) {
+    const r = screen.getBoundingClientRect();
+    st.left = Math.min(Math.max(pipPos.x, 8), innerWidth - r.width - 8) + "px";
+    st.top = Math.min(Math.max(pipPos.y, 8), innerHeight - r.height - 8) + "px";
+    st.right = st.bottom = "auto";
+  } else if (!on) {
+    st.left = st.top = st.right = st.bottom = "";  // back in the lens: no leftover position
+  }
+}
+function updatePip() {
+  const on = (!slotVisible || document.body.classList.contains("testing")) && !pipClosed && !!(phoneSrc || trackerRunning);
+  screen.classList.toggle("pip", on);
+  slot.classList.toggle("pipped", on);
+  placePip(on);
+}
+addEventListener("resize", () => placePip(screen.classList.contains("pip")));
+new IntersectionObserver(([e]) => {
+  slotVisible = e.intersectionRatio > 0.25;
+  if (slotVisible) pipClosed = false;
+  updatePip();
+}, { threshold: [0, 0.25, 0.5] }).observe(slot);
+const backToView = () => slot.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+$("pip-close").onclick = e => { e.stopPropagation(); pipClosed = true; updatePip(); };
+$("pip-up").onclick = e => { e.stopPropagation(); backToView(); };
+$("pip-back").onclick = backToView;
+let pipDrag = null;
+screen.addEventListener("pointerdown", e => {
+  if (!screen.classList.contains("pip") || e.target.closest("button")) return;
+  const r = screen.getBoundingClientRect();
+  pipDrag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+  screen.setPointerCapture(e.pointerId);
+  screen.classList.add("dragging");
+});
+screen.addEventListener("pointermove", e => {
+  if (!pipDrag || e.pointerId !== pipDrag.id) return;
+  Object.assign(screen.style, { left: e.clientX - pipDrag.dx + "px", top: e.clientY - pipDrag.dy + "px", right: "auto", bottom: "auto" });
+});
+function dropPip(e) {  // stays where it is dropped
+  if (!pipDrag || e.pointerId !== pipDrag.id) return;
+  pipDrag = null;
+  screen.classList.remove("dragging");
+  const r = screen.getBoundingClientRect();
+  pipPos = { x: Math.round(r.left), y: Math.round(r.top) };
+  try { localStorage.setItem("gt-pip", JSON.stringify(pipPos)); } catch (e) {}
+  placePip(true);
+}
+screen.addEventListener("pointerup", dropPip);
+screen.addEventListener("pointercancel", dropPip);
+
+// ---- phone link and address
+function showAddress() {
+  document.body.classList.toggle("hide-addr", !reveal);
+  $("reveal").textContent = reveal ? "Hide" : "Show";
+  $("reveal").setAttribute("aria-pressed", String(reveal));
+  $("addr-row").hidden = !phoneSrc || isCam();
+  let host = phoneSrc;
+  try { host = new URL(phoneSrc).host; } catch (e) {}
+  $("addr").textContent = host;
+  $("addr").setAttribute("aria-label", reveal ? "Phone address " + host : "Phone address, hidden");
+  $("s1-text").textContent = isCam() ? `Using ${camName()}. Pair the phone to use the glasses instead.`
+    : phoneSrc ? "Linked. Pair again if the phone joins another network." : "Scan a code from here with the iPhone Camera.";
+  $("s1-state").textContent = isCam() ? "Camera" : phoneSrc ? "Linked" : "Not linked";
+  $("s2-h").textContent = isCam() ? "Aim the camera" : "Stream from the glasses";
+  $("s2-text").textContent = isCam()
+    ? `Point ${camName()} at the screen so the markers are in view. Once tracking (Practice mode to just look), the left lens shows what it sees.`
+    : "Put the glasses on. On the phone, open GlassesTouch and tap Start streaming, or tap Use this phone's camera instead and stand the phone facing the screen. The left lens shows the picture when it arrives.";
+  if (cameras.length) $("cam-list").value = isCam() && cameras.some(c => "camera:" + c.id === phoneSrc) ? phoneSrc : "";
+  if ($("pairbox").hidden) {
+    $("pair").textContent = phoneSrc && !isCam() ? "Pair again" : "Pair phone";
+    $("pair").className = phoneSrc ? "" : "btn-ink";
+  }
+}
+$("reveal").onclick = () => { reveal = !reveal; showAddress(); poll(); };
+
+async function loadCameras() {  // when the list opens, and once at load to name the chosen camera
+  let found;
+  try { found = await (await fetch("/cameras", { cache: "no-store" })).json(); } catch (e) { return; }
+  if (JSON.stringify(found) === JSON.stringify(cameras) && $("cam-list").options.length > 1) return;  // unchanged: keep the menu as is
+  cameras = found;
+  $("cam-list").replaceChildren(new Option(cameras.length ? "Choose a camera…" : "No cameras found", ""),
+                                 ...cameras.map(c => new Option(c.name, "camera:" + c.id)));
+  showAddress();
+  updatePreview();
+}
+$("cams").addEventListener("toggle", () => { if ($("cams").open) loadCameras(); });
+setInterval(() => { if ($("cams").open) loadCameras(); }, 3000);  // an iPhone joins Continuity Camera whenever it's ready
+$("cam-list").onchange = () => { if ($("cam-list").value) { $("source").value = $("cam-list").value; saveConfig(); } };
+
+function showConfig(c) {
+  $("source").value = c.source;
+  BOOL_KEYS.forEach(k => { $(k).checked = c[k]; });
+  $("marker_size").value = c.marker_size === null ? "" : c.marker_size;
+  $("tap_min_acc").value = c.tap_min_acc;
+  phoneSrc = c.source;
+  showAddress();
+  updatePreview();
+}
+
+function settings() {
+  const s = { source: $("source").value };
+  BOOL_KEYS.forEach(k => { s[k] = $(k).checked; });
+  const m = $("marker_size").value.trim();
+  s.marker_size = m === "" ? null : (/^\d+$/.test(m) ? Number(m) : m);  // a non-number goes through and is refused
+  const t = $("tap_min_acc").value.trim();
+  s.tap_min_acc = t === "" ? null : Number(t);  // null (empty or not a number) is refused by the server
+  return s;
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Panel-Token": TOKEN },
+                                body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+function fail(e) { $("msg").textContent = mask(e.message); }
+
+async function saveConfig() {
+  try { $("msg").textContent = ""; showConfig((await post("/config", settings())).config); } catch (e) { fail(e); }
+}
+
+async function startTracking() {
+  try { $("msg").textContent = ""; await post("/start", settings()); } catch (e) { fail(e); }
+  poll();
+}
+async function stopTracking() {
+  try { $("msg").textContent = ""; await post("/stop"); } catch (e) { fail(e); }
+  poll();
+}
+$("start").onclick = startTracking;
+$("stop").onclick = stopTracking;
+$("run").onclick = () => (trackerRunning ? stopTracking() : startTracking());
+$("source").addEventListener("change", saveConfig);
+BOOL_KEYS.concat(["marker_size", "tap_min_acc"]).forEach(k => $(k).addEventListener("change", saveConfig));
+
+function drawQR(rows) {  // rows of "0"/"1", plus the 4-module white quiet zone phone cameras need
+  const n = rows.length, q = 4, svg = $("qr");
+  svg.setAttribute("viewBox", `0 0 ${n + 2 * q} ${n + 2 * q}`);
+  svg.setAttribute("shape-rendering", "crispEdges");
+  let d = "";
+  rows.forEach((row, y) => { for (let x = 0; x < n; x++) if (row[x] === "1") d += `M${x + q} ${y + q}h1v1h-1z`; });
+  svg.innerHTML = `<rect width="100%" height="100%" style="fill: var(--color-qr-light)"/><path style="fill: var(--color-qr-dark)" d="${d}"/>`;
+}
+function closePairBox() {
+  $("pairbox").hidden = $("qrwrap").hidden = true;
+  showAddress();
+}
+$("pair").onclick = async () => {
+  try {
+    $("msg").textContent = "";
+    drawQR((await post("/pair/start")).qr);
+    $("pairbox").hidden = $("qrwrap").hidden = false;
+    $("pair").textContent = "New code";
+    $("pair").className = "";
+  } catch (e) { fail(e); }
+  poll();
+};
+$("paircancel").onclick = async () => {
+  try { await post("/pair/cancel"); } catch (e) { fail(e); }
+  closePairBox();
+};
+
+// ---- settings box: under the gear, right edges aligned
+$("settings").addEventListener("beforetoggle", e => {
+  if (e.newState !== "open") return;
+  const g = $("gear").getBoundingClientRect(), box = $("settings");
+  box.style.top = ($("bar").getBoundingClientRect().bottom + 8) + "px";
+  box.style.setProperty("--gear-right", Math.max(8, innerWidth - g.right) + "px");  // wide screens; narrow ones use the gutters
+});
+$("settings").addEventListener("toggle", e => {
+  if (e.newState === "open") $("log").scrollTop = $("log").scrollHeight;  // a closed box can't scroll, so show the latest lines
+});
+
+// ---- status
+function showStats(line) {  // "stats fps=14.2 hand=13/14 M markers=12 tracking=2 none=0 ..."
+  const v = {};
+  for (const m of line.matchAll(/(\w+)=([\d.]+)(?:\/(\d+))?/g)) v[m[1]] = [Number(m[2]), Number(m[3] || 0)];
+  const n = v.hand ? v.hand[1] : 0;
+  if (!trackerRunning || !v.fps || !n) {
+    ["r-fps", "r-hand", "r-screen"].forEach(id => { $(id).textContent = "–"; });
+    $("hud-fps").textContent = "";
+    $("hud-detail").textContent = "";
+    return;
+  }
+  const hand = Math.round(100 * v.hand[0] / n);
+  const found = Math.round(100 * ["markers", "content", "tracking"].reduce((a, k) => a + (v[k] ? v[k][0] : 0), 0) / n);
+  $("r-fps").textContent = v.fps[0].toFixed(1) + " fps";
+  $("r-hand").textContent = hand + " %";
+  $("r-screen").textContent = found + " %";
+  $("hud-fps").textContent = v.fps[0].toFixed(0) + " FPS";
+  $("hud-detail").textContent = `HAND ${hand}% · SCREEN ${found}%`;
+}
+let pickedStep = 0, autoStep = 0;  // a tab the user opened; cleared when the current step moves on
+[1, 2, 3].forEach(i => { $("tab-" + i).onclick = () => { pickedStep = i; showStep(); }; });
+function showStep() {
+  const now = [1, 2, 3].find(i => $("s" + i).dataset.s === "now") || 3;
+  if (now !== autoStep) { autoStep = now; pickedStep = 0; }
+  const shown = pickedStep || now;
+  [1, 2, 3].forEach(i => {
+    $("s" + i).hidden = i !== shown;
+    $("tab-" + i).setAttribute("aria-selected", String(i === shown));
+    $("tab-" + i).dataset.s = $("s" + i).dataset.s;
+  });
+}
+function setRow(id, state, word) {
+  $(id).dataset.s = state;
+  $(id + "-state").textContent = word;
+}
+
+let pageVersion;  // panel.html's change time when this page loaded
+async function poll() {
+  let s;
+  try { s = await (await fetch("/status", { cache: "no-store" })).json(); } catch (e) { return; }
+  pageVersion ??= s.page;
+  if (s.page !== pageVersion) { location.reload(); return; }  // the page file changed: show the new one
+  const t = s.tracker;
+  trackerRunning = t.state === "running";
+  $("state").textContent = t.state === "stopped" ? `Stopped (exit code ${t.exit_code})`
+                         : t.state === "running" ? "Tracking" : "Not started";
+
+  if (s.source !== phoneSrc && document.activeElement !== $("source")) {  // e.g. a phone just paired
+    $("source").value = s.source;
+    phoneSrc = s.source;
+    showAddress();
+  }
+  const p = s.pairing;
+  if (p.open) {
+    $("pairleft").textContent = `Code works for ${Math.floor(p.seconds_left / 60)}:${String(p.seconds_left % 60).padStart(2, "0")}`;
+  } else if (pairWasOpen) {
+    closePairBox();  // paired, cancelled or expired
+  }
+  pairWasOpen = p.open;
+  if (pairedSeen !== undefined && p.last && p.last !== pairedSeen && !$("paired").open) $("paired").showModal();  // a phone just paired
+  pairedSeen = p.last;
+  updatePreview();
+  showPicture();
+  updatePip();
+
+  const streaming = picture || trackerRunning || isCam();  // a camera is ready to track: nothing to wait for
+  $("s1").dataset.s = phoneSrc ? "done" : "now";
+  setRow("s2", !phoneSrc ? "todo" : streaming ? "done" : "now",
+         isCam() && !trackerRunning ? "Camera ready" : streaming ? "Picture coming in" : "No picture");
+  setRow("s3", trackerRunning ? "done" : streaming ? "now" : "todo",
+         trackerRunning ? ($("dry_run").checked ? "Practice mode" : "Tracking") : "Off");
+  showStep();
+  $("s3-text").textContent = !trackerRunning ? "Taps on the screen become clicks where your finger is."
+    : $("dry_run").checked ? "Practice mode: tracking, but the mouse stays put." : "Tracking. Tap the screen to click.";
+  $("helper").textContent = s.helper ? "Tap sensor ready." : "Tap sensor not running. Install it with install_helper.sh.";
+  $("start").hidden = trackerRunning;
+  $("stop").hidden = !trackerRunning;
+  $("run").textContent = trackerRunning ? "Stop" : "Start";
+  $("run").className = trackerRunning ? "btn-stop" : "btn-ink";
+  $("run").setAttribute("aria-label", trackerRunning ? "Stop tracking" : "Start tracking");
+
+  showStats(s.stats);
+  $("problems").replaceChildren(...s.problems.map(text => {
+    const d = document.createElement("p");
+    d.className = "problem";
+    d.textContent = mask(text);
+    return d;
+  }));
+  const log = $("log");
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = mask(s.lines.join("\n")) || "Nothing yet. Start tracking to see what the tracker is doing.";
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+
+// ---- full-screen test (fullscreen needs a click, so pairing asks first)
+let pairedSeen;  // the last pairing time seen; undefined until the first poll
+async function enterTest() {
+  document.body.classList.add("testing");
+  pipClosed = false;
+  updatePip();
+  try { await document.documentElement.requestFullscreen(); } catch (e) {}  // the test layout works without full screen too
+  if ((picture || isCam()) && !trackerRunning) startTracking();
+  startTutorial();
+}
+function exitTest() {
+  say(null);
+  setHand(null);
+  document.body.classList.remove("testing");
+  if (document.fullscreenElement) document.exitFullscreen();
+  updatePip();
+}
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && document.body.classList.contains("testing")) exitTest(); });
+$("tut-exit").onclick = exitTest;
+$("test-go").onclick = enterTest;
+$("paired-go").onclick = enterTest;
+
+// Tutorial: purely on this page. No requests, no token.
+const DUCK = `<svg viewBox="0 0 64 66" aria-hidden="true"><defs>
+  <radialGradient id="duck-g" cx="0.36" cy="0.28" r="0.85"><stop offset="0" style="stop-color: var(--color-duck-hi)"/><stop offset="0.45" style="stop-color: var(--color-duck)"/><stop offset="1" style="stop-color: var(--color-duck-2)"/></radialGradient>
+  <linearGradient id="bill-g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color: var(--color-beak)"/><stop offset="1" style="stop-color: var(--color-beak-2)"/></linearGradient>
+  <radialGradient id="duck-s" cx="0.5" cy="0.5" r="0.5"><stop offset="0" style="stop-color: var(--color-shadow)"/><stop offset="1" style="stop-color: var(--color-glare-0)"/></radialGradient></defs>
+  <ellipse cx="32" cy="61" rx="25" ry="4" fill="url(#duck-s)"/>
+  <path d="M8 46C8 34 18 28 32 28C46 28 57 34 57 46C57 55 47 60 32 60C17 60 8 55 8 46Z" fill="url(#duck-g)"/>
+  <path class="duck-wing" d="M10 44C12 38 17 37 19 41C20 46 16 51 12 51C10 50 9.5 47 10 44Z"/>
+  <path class="duck-wing" d="M55 44C53 38 48 37 46 41C45 46 49 51 53 51C55 50 55.5 47 55 44Z"/>
+  <circle cx="32" cy="22" r="15" fill="url(#duck-g)"/>
+  <ellipse cx="25.5" cy="18.5" rx="2.8" ry="3.4" class="duck-eye"/><ellipse cx="38.5" cy="18.5" rx="2.8" ry="3.4" class="duck-eye"/>
+  <circle cx="26.5" cy="17.2" r="1.1" style="fill: var(--color-surface)"/><circle cx="39.5" cy="17.2" r="1.1" style="fill: var(--color-surface)"/>
+  <path d="M21 26.5C24 24.5 40 24.5 43 26.5C44 29.5 40 32.5 32 32.5C24 32.5 20 29.5 21 26.5Z" fill="url(#bill-g)"/>
+  <path d="M22.5 27.6Q32 30.4 41.5 27.6" fill="none" style="stroke: var(--color-beak-2)" stroke-width="1" stroke-linecap="round"/>
+  <ellipse cx="25" cy="12.5" rx="5" ry="2.6" transform="rotate(-25 25 12.5)" style="fill: var(--color-surface)" fill-opacity="0.75"/>
+  <ellipse cx="18" cy="38" rx="5" ry="2.2" transform="rotate(-20 18 38)" style="fill: var(--color-surface)" fill-opacity="0.6"/>
+  <circle cx="43.5" cy="27" r="1.2" style="fill: var(--color-surface)" fill-opacity="0.7"/>
+</svg>`;  // a rubber duck, facing you
+let tutStep = 0, tutDone = false, tutOffsets = [], quackAudio = null;
+// The narrator: reads each step out with the Mac's own voice (speechSynthesis works in the app's WKWebView too)
+let voiceOn = true, spoken = "";
+try { voiceOn = localStorage.getItem("gt-voice") !== "off"; } catch (e) {}
+function say(text) {  // null: stop talking
+  if (!window.speechSynthesis) return;
+  speechSynthesis.cancel();  // a new step talks over nothing: the old line stops
+  if (text) spoken = text;
+  if (!text || !voiceOn) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US";
+  speechSynthesis.speak(u);
+}
+function showVoice() {
+  $("tut-voice").textContent = voiceOn ? "Voice on" : "Voice off";
+  $("tut-voice").setAttribute("aria-pressed", String(voiceOn));
+}
+$("tut-voice").onclick = () => {
+  voiceOn = !voiceOn;
+  try { localStorage.setItem("gt-voice", voiceOn ? "on" : "off"); } catch (e) {}
+  showVoice();
+  say(voiceOn ? spoken : null);  // on again: repeat the current step
+};
+showVoice();
+function tapOffset(el, e) {  // points from the centre of el, or null for a keyboard press
+  if (!e.clientX && !e.clientY) return null;
+  const r = el.getBoundingClientRect();
+  return Math.round(Math.hypot(e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2));
+}
+function makeDuck(stage, label) {
+  const d = document.createElement("button");
+  d.type = "button";
+  d.className = "duck";
+  d.setAttribute("aria-label", label);
+  d.innerHTML = DUCK;
+  d.style.left = 8 + Math.random() * 52 + "%";  // kept out of the lower right, where the mini-player sits
+  d.style.top = 12 + Math.random() * 48 + "%";
+  stage.append(d);
+  return d;
+}
+function quack(d) {  // a wobble, a "Quack!" bubble and a short synthesised quack (no audio file)
+  d.classList.remove("quack");
+  void d.offsetWidth;  // restart the wobble
+  d.classList.add("quack");
+  const b = document.createElement("span");
+  b.className = "quack-bubble";
+  b.textContent = "Quack!";
+  b.style.left = d.offsetLeft + d.offsetWidth / 2 + "px";
+  b.style.top = d.offsetTop + "px";
+  b.addEventListener("animationend", () => b.remove());
+  d.parentElement.append(b);
+  try {
+    quackAudio = quackAudio || new AudioContext();
+    const a = quackAudio, t = a.currentTime;
+    [[0, 620, 380], [0.12, 540, 260]].forEach(([at, f0, f1]) => {  // "qua-ack": two falling, nasal blips
+      const o = a.createOscillator(), f = a.createBiquadFilter(), g = a.createGain();
+      o.type = "sawtooth";
+      o.frequency.setValueAtTime(f0, t + at);
+      o.frequency.exponentialRampToValueAtTime(f1, t + at + 0.12);
+      f.type = "bandpass";
+      f.frequency.value = 1150;
+      f.Q.value = 3.5;
+      g.gain.setValueAtTime(0.0001, t + at);
+      g.gain.exponentialRampToValueAtTime(0.3, t + at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + at + 0.14);
+      o.connect(f).connect(g).connect(a.destination);
+      o.start(t + at);
+      o.stop(t + at + 0.16);
+    });
+  } catch (e) {}  // no sound is fine
+}
+const TUT = [
+  { title: "Tap the button", hint: "One quick tap with one finger, then lift it.", g: "tap", build(stage, done) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn-ink tut-btn";
+      b.textContent = "Tap me";
+      b.addEventListener("click", e => done(tapOffset(b, e)));
+      stage.append(b);
+    } },
+  { title: "Tap the duck", hint: "It's smaller and somewhere new. Aim for the middle.", g: "tap", build(stage, done) {
+      const d = makeDuck(stage, "Duck: tap it");
+      d.addEventListener("click", e => { quack(d); done(tapOffset(d, e)); });
+    } },
+  { title: "Double-tap the duck", hint: "Two taps in the same spot, close together.", g: "dbl", build(stage, done) {
+      const d = makeDuck(stage, "Duck: double-tap it");
+      d.addEventListener("dblclick", e => { quack(d); done(tapOffset(d, e)); });
+    } },
+  { title: "Drag the ducks into the pond", hint: "Tap a duck, keep your finger on it for a moment, then slide it into the pond. All three.", g: "drag", build(stage, done) {
+      const pond = document.createElement("div");
+      pond.className = "pond";
+      pond.innerHTML = "<span>Pond</span>";
+      stage.append(pond);
+      const ducks = [0, 1, 2].map(i => {
+        const d = makeDuck(stage, `Duck ${i + 1}: drag it into the pond`);
+        d.style.left = "5%";
+        d.style.top = 8 + i * 27 + "%";
+        return d;
+      });
+      const inPond = d => {
+        const a = d.getBoundingClientRect(), b = pond.getBoundingClientRect();
+        const x = (a.left + a.width / 2 - (b.left + b.width / 2)) / (b.width / 2), y = (a.top + a.height / 2 - (b.top + b.height / 2)) / (b.height / 2);
+        return x * x + y * y < 1;  // inside the oval
+      };
+      const count = () => {
+        const n = ducks.filter(d => d.classList.contains("swimming")).length;
+        $("tut-result").textContent = `${n} of 3 in the pond`;
+        if (n === 3) done(null);
+      };
+      ducks.forEach(d => {
+        let grab = null;
+        d.addEventListener("pointerdown", e => {
+          const r = d.getBoundingClientRect();
+          grab = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+          d.setPointerCapture(e.pointerId);
+          d.classList.add("dragging");
+        });
+        d.addEventListener("pointermove", e => {
+          if (!grab || e.pointerId !== grab.id) return;
+          const s = stage.getBoundingClientRect();
+          d.style.left = Math.min(Math.max(e.clientX - grab.dx - s.left, 0), s.width - d.offsetWidth) + "px";
+          d.style.top = Math.min(Math.max(e.clientY - grab.dy - s.top, 0), s.height - d.offsetHeight) + "px";
+          pond.classList.toggle("near", inPond(d));
+        });
+        const drop = e => {
+          if (!grab || e.pointerId !== grab.id) return;
+          grab = null;
+          d.classList.remove("dragging");
+          pond.classList.remove("near");
+          const was = d.classList.contains("swimming"), now = inPond(d);
+          d.classList.toggle("swimming", now);
+          if (now && !was) quack(d);
+          count();
+        };
+        d.addEventListener("pointerup", drop);
+        d.addEventListener("pointercancel", drop);
+      });
+      count();
+    } },
+  { title: "Scroll to the bottom", hint: "Put two fingers together on the list and slide them until you reach the last row.", g: "scroll", build(stage, done) {
+      const l = document.createElement("div");
+      l.className = "tut-list";
+      l.tabIndex = 0;
+      l.setAttribute("aria-label", "List to scroll to the bottom");
+      for (let i = 1; i <= 150; i++) {
+        const row = document.createElement("div");
+        row.textContent = i < 150 ? "Row " + i : "You made it to the bottom";
+        l.append(row);
+      }
+      l.addEventListener("scroll", () => { if (l.scrollTop + l.clientHeight >= l.scrollHeight - 4) done(null); });
+      stage.append(l);
+    } },
+];
+function renderTutorial() {
+  const stage = $("tut-stage"), finished = tutStep >= TUT.length;
+  stage.className = "tut-stage";
+  stage.replaceChildren();
+  $("tut-result").textContent = "";
+  $("tut-skip").hidden = finished;
+  if (finished) {
+    const taps = tutOffsets.filter(o => typeof o === "number");
+    $("tut-n").textContent = "Done";
+    $("tut-h").textContent = "That's every gesture";
+    $("tut-hint").textContent = "Here's how close your taps landed to the middle of each target.";
+    say("That's every gesture. Here's how close your taps landed to the middle of each target.");
+    setHand(null);
+    const box = document.createElement("div");
+    box.className = "tut-summary";
+    box.innerHTML = `<h2>Tap accuracy</h2><dl>${tutOffsets.map((o, i) => o === undefined ? "" :
+      `<dt>${TUT[i].title}</dt><dd>${o === "skipped" ? "skipped" : o === null ? "done" : o + " pt off"}</dd>`).join("")}
+      <dt>Average tap</dt><dd>${taps.length ? Math.round(taps.reduce((a, b) => a + b, 0) / taps.length) + " pt off" : "–"}</dd></dl>
+      <div class="dialog-actions"><button type="button" id="tut-again">Run it again</button> <button type="button" class="btn-ink" id="tut-done">Done</button></div>`;
+    stage.append(box);
+    $("tut-again").onclick = startTutorial;
+    $("tut-done").onclick = exitTest;
+    return;
+  }
+  const t = TUT[tutStep];
+  $("tut-n").textContent = `Step ${tutStep + 1} of ${TUT.length}`;
+  $("tut-h").textContent = t.title;
+  $("tut-hint").textContent = t.hint;
+  say(`${t.title}. ${t.hint}`);
+  setHand(t.g);
+  tutDone = false;
+  t.build(stage, off => {  // the step's success: show it, record the tap offset, move on
+    if (tutDone) return;
+    tutDone = true;
+    tutOffsets[tutStep] = off;
+    stage.classList.add("win");
+    say("Nice!");
+    $("tut-result").textContent = off === null ? "Nice." : off <= 6 ? `Nice, right on target.` : `Nice, ${off} pt from the middle.`;
+    setTimeout(() => { tutStep += 1; renderTutorial(); }, 1100);
+  });
+}
+function startTutorial() {
+  tutStep = 0;
+  tutOffsets = [];
+  renderTutorial();
+}
+$("tut-skip").onclick = () => { tutOffsets[tutStep] = "skipped"; tutStep += 1; renderTutorial(); };
+const FINGER = x => `<path class="g-fing" d="M${x} 47V21a5 5 0 0 1 10 0V47"/><path class="g-nail" d="M${x + 2.5} 20a2.5 2.5 0 0 1 5 0"/>`;
+const RIPPLE = (x, d) => `<circle class="g-rip${d ? " d2" : ""}" cx="${x + 5}" cy="16" r="4"/>`;
+const GESTURES = {  // 48 x 48 drawings: fingertip at the top, rings where it touches
+  tap: `<g class="g-hand">${FINGER(19)}${RIPPLE(19)}</g>`,
+  dbl: `<g class="g-hand">${FINGER(19)}${RIPPLE(19)}${RIPPLE(19, 1)}</g>`,
+  drag: `<g class="g-drag"><path class="g-arrow" d="M30 30h12m-4-4l4 4l-4 4"/><g class="g-hand">${FINGER(12)}${RIPPLE(12)}${RIPPLE(12, 1)}</g></g>`,
+  scroll: `<g class="g-vert"><path class="g-arrow" d="M42 12v24m-4-20l4-4l4 4m-8 16l4 4l4-4"/><g class="g-hand">${FINGER(9)}${FINGER(21)}</g></g>`,
+  sideways: `<g class="g-horz"><path class="g-arrow" d="M6 6h36m-32-4l-4 4l4 4m28-8l4 4l-4 4"/><g class="g-hand">${FINGER(13)}${FINGER(25)}</g></g>`,
+};
+// ---- a 3D hand for the tutorial: ray-marched in a fragment shader (no library, nothing loaded)
+const HAND_FS = `precision highp float;
+uniform vec2 uRes; uniform float uTwo; uniform float uPress; uniform vec2 uMove;
+float sdCap(vec3 p, vec3 a, vec3 b, float r) { vec3 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h) - r; }
+float sdRBox(vec3 p, vec3 b, float r) { vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r; }
+float smin(float a, float b, float k) { float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0); return mix(b, a, h) - k * h * (1.0 - h); }
+float finger(vec3 p, vec3 a, float len, float r, float curl, float spread) {
+  float d = 1e5, ang = 0.0;
+  for (int i = 0; i < 3; i++) {
+    float seg = i == 0 ? 0.45 : (i == 1 ? 0.32 : 0.23);
+    ang += curl * (i == 0 ? 0.7 : 1.15);
+    vec3 b = a + normalize(vec3(spread * cos(ang), cos(ang), -sin(ang))) * len * seg;
+    d = smin(d, sdCap(p, a, b, r * (1.0 - 0.08 * float(i))), 0.025);
+    a = b;
+  }
+  return d;
+}
+float map(vec3 p) {
+  p -= vec3(uMove, -0.45 * uPress);                       // the hand moves toward the screen when it presses
+  float t = 0.5 + 0.3 * uPress, c = cos(t), s = sin(t);  // and tips forward
+  p.yz = mat2(c, s, -s, c) * p.yz;
+  vec3 q = p; q.x *= 1.0 - 0.14 * q.y;                                                     // the palm narrows to the wrist
+  float d = sdRBox(q, vec3(0.24, 0.3, 0.02), 0.13);                                        // back of the hand
+  d = smin(d, sdCap(p, vec3(0.0, -0.4, 0.0), vec3(0.04, -1.5, 0.1), 0.22), 0.16);          // wrist, forearm
+  d = smin(d, finger(p, vec3(-0.22, 0.38, 0.0), 0.84, 0.092, 0.04, mix(-0.07, 0.02, uTwo)), 0.07);           // index: pointing
+  d = smin(d, finger(p, vec3(-0.07, 0.42, 0.0), 0.88, 0.086, mix(1.3, 0.05, uTwo), mix(0.03, -0.03, uTwo)), 0.07); // middle
+  d = smin(d, finger(p, vec3(0.09, 0.40, 0.0), 0.80, 0.082, 1.35, 0.06), 0.07);             // ring: curled
+  d = smin(d, finger(p, vec3(0.24, 0.33, 0.0), 0.64, 0.07, 1.4, 0.12), 0.07);               // little: curled
+  d = smin(d, sdCap(p, vec3(-0.28, -0.2, 0.02), vec3(-0.48, 0.02, -0.1), 0.1), 0.09);       // thumb, tucked
+  d = smin(d, sdCap(p, vec3(-0.48, 0.02, -0.1), vec3(-0.38, 0.2, -0.24), 0.083), 0.04);
+  return d;
+}
+vec3 nrm(vec3 p) { vec2 e = vec2(0.0015, 0.0);
+  return normalize(vec3(map(p + e.xyy) - map(p - e.xyy), map(p + e.yxy) - map(p - e.yxy), map(p + e.yyx) - map(p - e.yyx))); }
+void main() {
+  vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
+  vec3 ro = vec3(0.7, 1.05, 2.4), ta = vec3(-0.05, 0.3, 0.0);       // the wearer's eye: behind, above and right of the hand
+  vec3 ww = normalize(ta - ro), uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0))), vv = cross(uu, ww);
+  vec3 rd = normalize(uv.x * uu + uv.y * vv + 1.4 * ww);
+  float t = 0.0, d = 1.0;
+  for (int i = 0; i < 90; i++) { d = map(ro + rd * t); if (d < 0.0008 || t > 9.0) break; t += d * 0.9; }
+  if (d > 0.005) { gl_FragColor = vec4(0.0); return; }
+  vec3 p = ro + rd * t, n = nrm(p), l = normalize(vec3(-0.5, 0.75, 0.7));
+  float dif = clamp((dot(n, l) + 0.3) / 1.3, 0.0, 1.0);
+  float rim = pow(clamp(1.0 + dot(n, rd), 0.0, 1.0), 2.5);
+  float spec = pow(clamp(dot(reflect(-l, n), -rd), 0.0, 1.0), 28.0);
+  float ao = clamp(0.35 + map(p + n * 0.1) / 0.1 * 0.65, 0.0, 1.0);
+  vec3 skin = vec3(0.93, 0.71, 0.59);
+  vec3 col = skin * (0.28 + 0.78 * dif) * ao + vec3(0.95, 0.42, 0.32) * rim * 0.35 + vec3(1.0) * spec * 0.1;
+  gl_FragColor = vec4(pow(col, vec3(0.95)), 1.0);
+}`;
+const handDraw = (() => {
+  try {
+    const cv = $("hand3d"), gl = cv.getContext("webgl", { antialias: true });
+    if (!gl) return null;
+    const shader = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      return sh;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, shader(gl.VERTEX_SHADER, "attribute vec2 a; void main() { gl_Position = vec4(a, 0.0, 1.0); }"));
+    gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, HAND_FS));
+    gl.bindAttribLocation(prog, 0, "a");
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);  // one triangle covers the canvas
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const u = name => gl.getUniformLocation(prog, name);
+    const uRes = u("uRes"), uTwo = u("uTwo"), uPress = u("uPress"), uMove = u("uMove");
+    return (two, press, x, y) => {
+      const w = Math.round(cv.clientWidth * devicePixelRatio), h = Math.round(cv.clientHeight * devicePixelRatio);
+      if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; gl.viewport(0, 0, w, h); }
+      gl.uniform2f(uRes, w, h);
+      gl.uniform1f(uTwo, two);
+      gl.uniform1f(uPress, press);
+      gl.uniform2f(uMove, x, y);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    };
+  } catch (e) {
+    console.warn("3D hand unavailable:", e);
+    return null;
+  }
+})();
+const smooth = x => x * x * (3 - 2 * x);
+const bump = (t, at, w) => smooth(Math.max(0, 1 - Math.abs(t - at) / w));  // 0..1 around time at
+const between = (t, a, b) => smooth(Math.min(Math.max((t - a) / (b - a), 0), 1));
+// each gesture: period in seconds, the pose at time t, and when the fingertip touches (for the ring)
+const HAND_MOTION = {
+  tap: { period: 1.8, taps: [0.6], at: t => ({ two: 0, press: bump(t, 0.6, 0.32), x: 0, y: 0 }) },
+  dbl: { period: 2.2, taps: [0.55, 0.95], at: t => ({ two: 0, press: Math.max(bump(t, 0.55, 0.2), bump(t, 0.95, 0.2)), x: 0, y: 0 }) },
+  drag: { period: 3.4, taps: [0.5, 0.9], at: t => ({ two: 0,
+      press: Math.max(bump(t, 0.5, 0.2), between(t, 0.72, 0.9) * (1 - between(t, 2.3, 2.5))),
+      x: 0.55 * between(t, 1.05, 2.2) * (1 - between(t, 2.6, 3.3)), y: 0 }) },
+  scroll: { period: 2.6, taps: [], at: t => ({ two: 1, press: 0.75, x: 0, y: 0.16 * Math.sin(t / 2.6 * 2 * Math.PI) }) },
+  sideways: { period: 2.6, taps: [], at: t => ({ two: 1, press: 0.75, x: 0.24 * Math.sin(t / 2.6 * 2 * Math.PI), y: 0 }) },
+};
+let handKind = null, handFrame = 0;
+function setHand(kind) {
+  handKind = kind;
+  cancelAnimationFrame(handFrame);
+  $("hand-rip").style.opacity = 0;
+  if (!kind) return;
+  if (!handDraw) {  // flat fallback
+    $("tut-g").innerHTML = `<svg viewBox="0 0 48 48" aria-hidden="true">${GESTURES[kind]}</svg>`;
+    return;
+  }
+  const m = HAND_MOTION[kind], t0 = performance.now();
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {  // one still pose, mid-gesture
+    const pose = m.at(m.taps.length ? m.taps[0] : 0.4);
+    handDraw(pose.two, pose.press, pose.x, pose.y);
+    return;
+  }
+  const frame = now => {
+    if (handKind !== kind) return;
+    const t = ((now - t0) / 1000) % m.period, pose = m.at(t);
+    handDraw(pose.two, pose.press, pose.x, pose.y);
+    const since = Math.min(...m.taps.map(at => (t - at + m.period) % m.period));
+    const rip = $("hand-rip").style;
+    rip.opacity = m.taps.length && since < 0.6 ? 1 - since / 0.6 : 0;
+    rip.transform = `scale(${0.6 + since * 3})`;
+    handFrame = requestAnimationFrame(frame);
+  };
+  handFrame = requestAnimationFrame(frame);
+}
+
+showConfig(CONFIG);
+loadCameras();
+poll();
+setInterval(poll, 1000);
+</script>
+</body></html>

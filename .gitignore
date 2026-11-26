@@ -1,5 +1,6 @@
 .DS_Store
 # Python tracker
+GlassesTouch.app/
 .venv/
 __pycache__/
 glasstouch/models/
